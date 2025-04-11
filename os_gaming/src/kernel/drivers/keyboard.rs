@@ -27,6 +27,15 @@ pub struct KeyboardState {
     alt_pressed: bool,
 }
 
+pub fn new() -> KeyboardState {
+    KeyboardState {
+        scancode: 0,
+        shift_pressed: false,
+        ctrl_pressed: false,
+        alt_pressed: false,
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct KeyEvent {
     pub character: char,
@@ -37,7 +46,7 @@ pub struct KeyEvent {
 }
 
 impl KeyboardState {
-    fn new() -> Self {
+    pub fn new() -> Self {
         KeyboardState {
             scancode: 0,
             shift_pressed: false,

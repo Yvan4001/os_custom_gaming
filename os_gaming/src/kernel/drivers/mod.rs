@@ -7,11 +7,13 @@ pub mod network;
 pub mod display;
 pub mod usb;
 pub mod gamepad;
-pub mod power;
 pub mod filesystem;
 pub mod timer;
-pub mod acpi;
+pub mod power;
 
+use gamepad::GamepadManager;
+use keyboard::KeyboardState;
+use mouse::MouseState;
 use spin::Mutex;
 use lazy_static::lazy_static;
 
@@ -22,6 +24,7 @@ pub struct DriverManager {
     pub usb_manager: usb::UsbManager,
     pub input_manager: InputManager,
     pub sound_system: sound::SoundDriver,
+    pub power_manager: power::PowerManager,
 }
 
 /// Input device abstraction
@@ -45,7 +48,6 @@ pub fn init() -> Result<(), &'static str> {
     timer::init()?;
     
     // Initialize ACPI for power management
-    acpi::init()?;
     
     // Initialize network subsystem
     let net_manager = network::init()?;
@@ -57,14 +59,15 @@ pub fn init() -> Result<(), &'static str> {
     let usb_manager = usb::init()?;
     
     // Initialize input devices
-    let keyboard_state = keyboard::init()?;
-    let mouse_state = mouse::init()?;
-    let gamepad_manager = gamepad::init()?;
+    let keyboard_state = keyboard::init();
+    mouse::init();
+    let gamepad_manager = gamepad::init();
+    let mouse_state = mouse::MouseState::new();
     
     let input_manager = InputManager {
-        keyboard: keyboard_state,
+        keyboard: KeyboardState::new(),
         mouse: mouse_state,
-        gamepads: gamepad_manager,
+        gamepads: GamepadManager::new(),
     };
     
     // Initialize sound system
@@ -83,6 +86,7 @@ pub fn init() -> Result<(), &'static str> {
         usb_manager,
         input_manager,
         sound_system,
+        power_manager : power::PowerManager::new(),
     };
     
     // Store global reference

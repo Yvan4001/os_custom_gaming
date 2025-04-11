@@ -489,3 +489,9 @@ impl SoundDriver {
         samples
     }
 }
+
+pub fn init() -> Result<SoundDriver, &'static str> {
+    let mut sound_driver = SoundDriver::new();
+    sound_driver.initialize()?;
+    Ok(sound_driver)
+}

@@ -1,6 +1,7 @@
 use eframe::{egui, Frame};
 use crate::{Config, DisplayMode, PerformanceProfile};
 use crate::system;
+use crate::kernel::drivers::power;
 use std::collections::VecDeque;
 
 const MAX_LINES: usize = 1000;
@@ -64,11 +65,98 @@ impl eframe::App for OsGamingApp {
         // Update system info every 1 second
         if ctx.input(|i| i.time) % 1.0 < 0.1 {
             self.update_system_info();
-        }
         if ui.button("Test Sound").clicked() {
             // Play a simple beep
-            let _ = kernel::drivers::sound_system::beep(440, 200);
+            let _ = crate::kernel::drivers::sound_system::beep(440, 200);
         }
+        }
+
+        egui::CentralPanel::default().show(ctx, |ui| {
+            ui.heading("System Power Management");
+            
+            ui.separator();
+            ui.heading("Performance Profile");
+            
+            let current_profile = power::get_performance_profile();
+            
+            if ui.radio(current_profile == PerformanceProfile::MaxPerformance, "Maximum Performance").clicked() {
+                let _ = power::set_performance_profile(PerformanceProfile::MaxPerformance);
+            }
+            
+            if ui.radio(current_profile == PerformanceProfile::Gaming, "Gaming").clicked() {
+                let _ = power::set_performance_profile(PerformanceProfile::Gaming);
+            }
+            
+            if ui.radio(current_profile == PerformanceProfile::Balanced, "Balanced").clicked() {
+                let _ = power::set_performance_profile(PerformanceProfile::Balanced);
+            }
+            
+            if ui.radio(current_profile == PerformanceProfile::PowerSaving, "Power Saving").clicked() {
+                let _ = power::set_performance_profile(PerformanceProfile::PowerSaving);
+            }
+            
+            ui.separator();
+            ui.heading("System Information");
+            
+            // Display battery info
+            if let Some(battery) = power::get_battery_info() {
+                ui.group(|ui| {
+                    ui.heading("Battery");
+                    ui.label(format!("Charge: {}%", battery.percent));
+                    
+                    if battery.charging {
+                        ui.label("Status: Charging");
+                    } else {
+                        if let Some(time) = battery.time_remaining {
+                            ui.label(format!("Time remaining: {} minutes", time));
+                        } else {
+                            ui.label("Status: Discharging");
+                        }
+                    }
+                    
+                    if let Some(wear) = battery.wear_level {
+                        ui.label(format!("Battery health: {}%", 100 - wear));
+                    }
+                });
+            } else {
+                ui.label("No battery detected");
+            }
+            
+            // Display thermal info
+            let thermal = power::get_thermal_info();
+            ui.group(|ui| {
+                ui.heading("Temperature");
+                ui.label(format!("CPU: {}°C", thermal.cpu_temp));
+                ui.label(format!("GPU: {}°C", thermal.gpu_temp));
+                
+                if let Some(rpm) = thermal.fan_rpm {
+                    ui.label(format!("Fan speed: {} RPM", rpm));
+                }
+                
+                if thermal.throttling {
+                    ui.colored_label(egui::Color32::RED, "Thermal throttling active!");
+                }
+            });
+            
+            ui.separator();
+            ui.heading("Power Controls");
+            
+            ui.horizontal(|ui| {
+                if ui.button("Sleep").clicked() {
+                    let pm = power::get_manager();
+                    let mut manager = pm.lock();
+                    let _ = manager.set_power_state(PowerState::S3);
+                }
+                
+                if ui.button("Reboot").clicked() {
+                    let _ = power::reboot();
+                }
+                
+                if ui.button("Shutdown").clicked() {
+                    let _ = power::shutdown();
+                }
+            });
+        });
         
         // Volume slider
         let mut volume = kernel::drivers::sound_system::get_volume();

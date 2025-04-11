@@ -12,7 +12,10 @@ lazy_static! {
 pub struct MouseState {
     pub x: i32,
     pub y: i32,
-    pub buttons: u8,
+    pub buttons: u8,  // Bit flags for button states
+    pub scroll_wheel: i8,
+    pub relative_x: i32,
+    pub relative_y: i32,
 }
 
 struct Mouse {
@@ -24,14 +27,23 @@ struct Mouse {
     packet: [u8; 3],
 }
 
+impl MouseState {
+    pub fn new() -> Self {
+        Self {
+            x: 0,
+            y: 0,
+            buttons: 0,
+            scroll_wheel: 0,
+            relative_x: 0,
+            relative_y: 0,
+        }
+    }
+}
+
 impl Mouse {
     fn new() -> Self {
         Self {
-            state: MouseState {
-                x: 0,
-                y: 0,
-                buttons: 0,
-            },
+            state: MouseState::new(),
             data_port: PortReadOnly::new(0x60),
             command_port: PortWriteOnly::new(0x64),
             status_port: Port::new(0x64),
@@ -145,5 +157,8 @@ pub fn get_state() -> MouseState {
         x: mouse.state.x,
         y: mouse.state.y,
         buttons: mouse.state.buttons,
+        scroll_wheel: mouse.state.scroll_wheel,
+        relative_x: mouse.state.relative_x,
+        relative_y: mouse.state.relative_y,
     }
 }
