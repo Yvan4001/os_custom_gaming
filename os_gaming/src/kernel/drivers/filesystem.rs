@@ -1169,6 +1169,14 @@ impl FilesystemManager {
     }
 }
 
+const DIRECTORY_LIST: [&str; 41] = [
+    "/bin", "/etc", "/home", "/tmp", "/var", "/boot", "/lib", "/lib64", "/opt", "/srv", "/mnt",
+    "/media", "/dev", "/proc", "/sys", "/run", "/usr", "/root", "/sysroot", "/tmpfs", "/sysfs", "/devfs", "/procfs", "/netfs",
+    "/cgroup", "/debugfs", "/devpts", "/hugetlbfs", "/mqueue", "/pstore", "/tracefs", "/configfs",
+    "/securityfs", "/fusectl", "/selinuxfs", "/sys/kernel/debug", "/sys/kernel/security",
+    "/sys/kernel/tracing", "/sys/kernel/cgroup", "/sys/kernel/hugepages", "/sys/kernel/mqueue",
+];
+
 /// Initialize the filesystem subsystem
 pub fn init(storage_manager: &StorageManager) -> Result<(), &'static str> {
     let mut fs_manager = FilesystemManager::new();
@@ -1208,50 +1216,9 @@ pub fn init(storage_manager: &StorageManager) -> Result<(), &'static str> {
         );
 
         // Create some test directories and files in RAM filesystem
-        fs_manager.create_directory("/bin")?;
-        fs_manager.create_directory("/etc")?;
-        fs_manager.create_directory("/home")?;
-        fs_manager.create_directory("/tmp")?;
-        fs_manager.create_directory("/var")?;
-        fs_manager.create_directory("/boot")?;
-        fs_manager.create_directory("/lib")?;
-        fs_manager.create_directory("/lib64")?;
-        fs_manager.create_directory("/opt")?;
-        fs_manager.create_directory("/srv")?;
-        fs_manager.create_directory("/mnt")?;
-        fs_manager.create_directory("/media")?;
-        fs_manager.create_directory("/dev")?;
-        fs_manager.create_directory("/proc")?;
-        fs_manager.create_directory("/sys")?;
-        fs_manager.create_directory("/run")?;
-        fs_manager.create_directory("/var/log")?;
-        fs_manager.create_directory("/var/tmp")?;
-        fs_manager.create_directory("/var/cache")?;
-        fs_manager.create_directory("/var/lib")?;
-        fs_manager.create_directory("/var/spool")?;
-        fs_manager.create_directory("/var/mail")?;
-        fs_manager.create_directory("/usr")?;
-        fs_manager.create_directory("/usr/sbin")?;
-        fs_manager.create_directory("/usr/bin")?;
-        fs_manager.create_directory("/usr/lib")?;
-        fs_manager.create_directory("/usr/local")?;
-        fs_manager.create_directory("/usr/local/bin")?;
-        fs_manager.create_directory("/usr/local/lib")?;
-        fs_manager.create_directory("/usr/local/share")?;
-        fs_manager.create_directory("/usr/local/etc")?;
-        fs_manager.create_directory("/usr/local/tmp")?;
-        fs_manager.create_directory("/usr/local/var")?;
-        fs_manager.create_directory("/usr/local/home")?;
-        fs_manager.create_directory("/usr/local/usr")?;
-        fs_manager.create_directory("/usr/local/etc/ssh")?;
-        fs_manager.create_directory("/usr/local/etc/ssl")?;
-        fs_manager.create_directory("/usr/local/etc/ssl/certs")?;
-        fs_manager.create_directory("/usr/local/etc/ssl/private")?;
-        fs_manager.create_directory("/usr/local/etc/ssl/certs/mycerts")?;
-        fs_manager.create_directory("/usr/local/etc/ssl/private/mykeys")?;
-        fs_manager.create_directory("/usr/local/etc/ssl/private/mykeys/private")?;
-        fs_manager.create_directory("/usr/local/etc/ssl/private/mykeys/public")?;
-        fs_manager.create_directory("/usr/local/etc/ssl/private/mykeys/certs")?;
+        for dir in DIRECTORY_LIST {
+            fs_manager.create_directory(dir)?;
+        }
 
         // Create a test file
         fs_manager.create_file("/hello.txt")?;
