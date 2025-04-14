@@ -1037,3 +1037,10 @@ impl NetworkManager {
 pub fn init() -> Result<NetworkManager, &'static str> {
     NetworkManager::new()
 }
+
+pub fn handle_gaming_interrupt() {
+    // Handle gaming interrupts here
+    // This is a placeholder for actual interrupt handling
+    #[cfg(feature = "std")]
+    log::info!("Gaming interrupt handled");
+}

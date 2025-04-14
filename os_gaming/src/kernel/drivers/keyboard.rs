@@ -3,6 +3,7 @@ use core::sync::atomic::{AtomicU8, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::instructions::port::Port;
+use x86_64::structures::idt::InterruptStackFrame;
 
 #[cfg(feature = "std")]
 use std::sync::mpsc::Sender;
@@ -166,9 +167,8 @@ fn map_scancode(scancode: u8, shift_pressed: bool, num_lock: bool) -> Option<cha
     character
 }
 
-
 // Keyboard interrupt handler
-pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: interrupts::InterruptStackFrame) {
+pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
     
     let mut port = Port::new(KEYBOARD_PORT);
     let scancode: u8 = unsafe { port.read() };
@@ -215,7 +215,7 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: interrupt
     
     // Send End-Of-Interrupt signal
     unsafe {
-        interrupts::PICS.lock().notify_end_of_interrupt(interrupts::KEYBOARD_INTERRUPT_INDEX);
+        interrupts::PICS.notify_end_of_interrupt(interrupts::KEYBOARD_INTERRUPT_INDEX);
     }
 }
 
@@ -226,7 +226,7 @@ pub fn init() {
     
     // Enable the keyboard IRQ in the PIC
     unsafe {
-        interrupts::PICS.lock().unmask(interrupts::KEYBOARD_INTERRUPT_INDEX);
+        interrupts::PICS.initialize();
     }
 }
 
@@ -245,4 +245,10 @@ pub fn is_key_pressed(scancode: u8) -> bool {
 pub fn get_modifiers() -> (bool, bool, bool) {
     let state = KEYBOARD_STATE.lock();
     (state.shift_pressed, state.ctrl_pressed, state.alt_pressed)
+}
+
+pub fn handle_interrupt() {
+    unsafe {
+        interrupts::PICS.notify_end_of_interrupt(interrupts::KEYBOARD_INTERRUPT_INDEX);
+    }
 }

@@ -1,4 +1,5 @@
 use super::drivers::{self, hdmi::GamingRequirements};
+use crate::kernel::interrupts;
 use crate::Config;
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -122,6 +123,9 @@ pub fn internal_init(config: BootConfig) -> Result<(), &'static str> {
     // 9. Power management initialization
     set_boot_status(BootStatus::PowerInitializing);
     power_init()?;
+
+    // 10. Initialize interrupts
+    interrupts::init();
     
     // Boot complete
     set_boot_status(BootStatus::BootCompleted);

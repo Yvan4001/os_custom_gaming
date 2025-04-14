@@ -1,16 +1,7 @@
-//! Timer subsystem for OS Gaming
-//! 
-//! Provides high-precision timing functionality using multiple timer sources:
-//! - Programmable Interval Timer (PIT)
-//! - High Precision Event Timer (HPET)
-//! - CPU Time-Stamp Counter (TSC)
-//! - Local APIC Timer
-//!
-//! This module handles timer interrupts, sleep/delay functions, and timing measurements.
-
 use core::sync::atomic::{AtomicU64, Ordering};
 use x86_64::instructions::port::Port;
 use x86_64::registers::model_specific::Msr;
+use x86_64::structures::idt::InterruptStackFrame;
 use spin::Mutex;
 use lazy_static::lazy_static;
 
@@ -331,9 +322,8 @@ impl TimerManager {
         1_000_000.0 / frame_time_us as f64
     }
 }
-
 /// Timer interrupt handler
-pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: crate::kernel::interrupts::InterruptStackFrame) {
+pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // Increment tick counter
     TICKS.fetch_add(1, Ordering::SeqCst);
     
@@ -372,6 +362,11 @@ pub fn timestamp_ns() -> u64 {
 /// Get the CPU frequency in MHz
 pub fn get_cpu_mhz() -> u64 {
     CPU_MHZ.load(Ordering::SeqCst)
+}
+
+pub fn tick() {
+    // This function is called by the timer interrupt handler
+    // It can be used to update game state or perform periodic tasks
 }
 
 /// Measure execution time of a function in microseconds

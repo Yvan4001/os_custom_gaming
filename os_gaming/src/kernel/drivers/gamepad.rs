@@ -46,6 +46,13 @@ pub const BTN_DPAD_LEFT: u32 = 0x00001000;
 pub const BTN_DPAD_RIGHT: u32 = 0x00002000;
 pub const BTN_GUIDE: u32 = 0x00004000;
 
+#[cfg(not(feature = "std"))]
+const USB_IRQ: u8 = 43;      // USB controller interrupt
+
+/// Constants for gamepad-specific interrupt sources
+#[cfg(not(feature = "std"))]
+const GAMEPAD_USB_ENDPOINT: u8 = 0x81;
+
 /// Represents a gamepad/controller device
 pub struct GamepadDevice {
     id: usize,
@@ -273,6 +280,349 @@ impl Clone for GamepadDevice {
             gamepad_type: self.gamepad_type,
             state: self.state,
             connected: AtomicBool::new(self.connected.load(Ordering::SeqCst)),
+        }
+    }
+}
+
+/// Handle a gamepad interrupt
+pub fn handle_interrupt() {
+    #[cfg(feature = "std")]
+    {
+        // In std mode, just simulate by polling
+        poll();
+        return;
+    }
+    
+    #[cfg(not(feature = "std"))]
+    {
+        // Get the gamepad manager instance
+        let mut manager = GAMEPAD_MANAGER.lock();
+        
+        // First, determine which device triggered the interrupt
+        // In a real implementation, this would check hardware controller registers
+        
+        // Track previous states to detect changes
+        let mut previous_states: Vec<(usize, GamepadState)> = manager.devices
+            .iter()
+            .filter(|d| d.is_connected())
+            .map(|d| (d.get_id(), d.get_state()))
+            .collect();
+        
+        // Check for USB controller interrupts (common source for modern gamepads)
+        if is_usb_interrupt_pending() {
+            process_usb_gamepad_interrupts(&mut manager);
+        }
+        
+        // Check for device-specific interrupts and update states
+        for device in manager.devices.iter_mut().filter(|d| d.is_connected()) {
+            let old_state = previous_states
+                .iter()
+                .find(|(id, _)| *id == device.get_id())
+                .map(|(_, state)| *state);
+            
+            // Get new state after interrupt processing
+            let new_state = device.get_state();
+            
+            // Compare states to detect changes if we have an old state
+            if let Some(old_state) = old_state {
+                // Check for button changes
+                if old_state.buttons != new_state.buttons {
+                    process_button_changes(device.get_id(), old_state.buttons, new_state.buttons);
+                }
+                
+                // Check for stick movement
+                if old_state.left_stick_x != new_state.left_stick_x || 
+                   old_state.left_stick_y != new_state.left_stick_y {
+                    process_stick_movement(
+                        device.get_id(),
+                        0, // Left stick ID
+                        new_state.left_stick_x,
+                        new_state.left_stick_y
+                    );
+                }
+                
+                if old_state.right_stick_x != new_state.right_stick_x || 
+                   old_state.right_stick_y != new_state.right_stick_y {
+                    process_stick_movement(
+                        device.get_id(),
+                        1, // Right stick ID
+                        new_state.right_stick_x,
+                        new_state.right_stick_y
+                    );
+                }
+                
+                // Check for trigger changes
+                if old_state.left_trigger != new_state.left_trigger {
+                    process_trigger_movement(device.get_id(), 0, new_state.left_trigger);
+                }
+                
+                if old_state.right_trigger != new_state.right_trigger {
+                    process_trigger_movement(device.get_id(), 1, new_state.right_trigger);
+                }
+            }
+        }
+        
+        // Acknowledge the interrupt
+        unsafe {
+            crate::kernel::interrupts::irq::end_of_interrupt(USB_IRQ);
+        }
+    }
+}
+#[cfg(not(feature = "std"))]
+fn is_usb_interrupt_pending() -> bool {
+    // In a real implementation, check the USB controller's interrupt status register
+    // This would typically involve reading hardware registers
+    
+    unsafe {
+        // Example implementation for UHCI controller:
+        const UHCI_USBSTS: u16 = 0x2;  // Status register offset
+        let base_port = 0xC000;         // Example base I/O port
+        let status = x86_64::instructions::port::Port::<u16>::new(base_port + UHCI_USBSTS).read();
+        (status & 0x1) != 0;         // Check interrupt flag bit
+        
+        // Or for memory-mapped EHCI/XHCI controllers:
+        // let mmio_base = 0xFEDC0000 as *const u32;  // Memory-mapped base
+        // let status = core::ptr::read_volatile(mmio_base.add(0x4)); // Status register
+        // (status & 0x1) != 0  // Check interrupt flag
+        
+        // For now, just assume there's an interrupt pending
+        true
+    }
+}
+
+#[cfg(not(feature = "std"))]
+fn process_usb_gamepad_interrupts(manager: &mut GamepadManager) {
+    // Process all connected USB gamepads
+    for device in manager.devices.iter_mut().filter(|d| d.is_connected()) {
+        match device.get_type() {
+            GamepadType::XboxController => process_xbox_controller(device),
+            GamepadType::PlayStation => process_playstation_controller(device),
+            GamepadType::NintendoSwitch => process_switch_controller(device),
+            _ => process_generic_controller(device),
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+fn process_xbox_controller(device: &mut GamepadDevice) {
+    // For Xbox controller, read USB endpoint data
+    unsafe {
+        // In a real implementation, we'd read from the USB HID endpoint
+        // Example pseudocode:
+        // let data = read_usb_endpoint(GAMEPAD_USB_ENDPOINT, device.get_id());
+        
+        // Xbox controllers use a specific report format we'd parse here
+        // For now, just set some simulated data based on device ID
+        let mut state = device.get_state();
+        
+        // Generate some test data based on time or counter
+        // In a real implementation, this would come from the USB endpoint
+        let counter = get_system_counter();
+        if counter % 100 < 50 {
+            state.buttons |= BTN_A;
+        } else {
+            state.buttons &= !BTN_A;
+        }
+        
+        // Update thumbstick position
+        let angle = (counter % 628) as f32 / 100.0; // 0 to 2π
+        state.left_stick_x = (angle.sin() * 32767.0) as i16;
+        state.left_stick_y = (angle.cos() * 32767.0) as i16;
+        
+        device.update_state(state);
+    }
+}
+
+#[cfg(not(feature = "std"))]
+fn process_playstation_controller(device: &mut GamepadDevice) {
+    // Similar to Xbox but with PlayStation-specific report parsing
+    // PlayStation controllers use different button mappings
+    unsafe {
+        let mut state = device.get_state();
+        
+        let counter = get_system_counter();
+        if counter % 100 < 50 {
+            state.buttons |= BTN_X; // Cross button on PlayStation
+        } else {
+            state.buttons &= !BTN_X;
+        }
+        
+        // Right thumbstick for variety
+        let angle = (counter % 628) as f32 / 100.0;
+        state.right_stick_x = (angle.sin() * 32767.0) as i16;
+        state.right_stick_y = (angle.cos() * 32767.0) as i16;
+        
+        device.update_state(state);
+    }
+}
+
+#[cfg(not(feature = "std"))]
+fn process_switch_controller(device: &mut GamepadDevice) {
+    // Nintendo Switch Pro controller handling
+    unsafe {
+        let mut state = device.get_state();
+        
+        let counter = get_system_counter();
+        if counter % 100 < 50 {
+            state.buttons |= BTN_B; // B button
+        } else {
+            state.buttons &= !BTN_B;
+        }
+        
+        device.update_state(state);
+    }
+}
+
+#[cfg(not(feature = "std"))]
+fn process_generic_controller(device: &mut GamepadDevice) {
+    // Generic controller handling - uses standard HID reports
+    unsafe {
+        let mut state = device.get_state();
+        
+        let counter = get_system_counter();
+        if counter % 100 < 50 {
+            state.buttons |= BTN_START;
+        } else {
+            state.buttons &= !BTN_START;
+        }
+        
+        device.update_state(state);
+    }
+}
+
+#[cfg(not(feature = "std"))]
+fn get_system_counter() -> u64 {
+    // In a real implementation, this would come from the system's time counter
+    // (e.g., TSC, PIT, or APIC timer)
+    unsafe {
+        // Read TSC if available
+        let low: u32;
+        let high: u32;
+        
+        core::arch::asm!(
+            "rdtsc",
+            out("eax") low,
+            out("edx") high,
+            options(nomem, nostack)
+        );
+        
+        ((high as u64) << 32) | (low as u64)
+    }
+}
+
+/// Process button state changes
+#[cfg(not(feature = "std"))]
+fn process_button_changes(device_id: usize, old_buttons: u32, new_buttons: u32) {
+    // Determine which buttons were pressed and released
+    let pressed = new_buttons & !old_buttons;
+    let released = old_buttons & !new_buttons;
+    
+    // Process pressed buttons
+    if pressed != 0 {
+        for btn_mask in [BTN_A, BTN_B, BTN_X, BTN_Y, BTN_LEFT_SHOULDER, BTN_RIGHT_SHOULDER,
+                        BTN_BACK, BTN_START, BTN_LEFT_THUMB, BTN_RIGHT_THUMB,
+                        BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT] {
+            if pressed & btn_mask != 0 {
+                // In a real implementation, you'd queue an event to your input system
+                // For now, just print debug
+                print_button_press(device_id, btn_mask);
+            }
+        }
+    }
+    
+    // Process released buttons
+    if released != 0 {
+        for btn_mask in [BTN_A, BTN_B, BTN_X, BTN_Y, BTN_LEFT_SHOULDER, BTN_RIGHT_SHOULDER,
+                        BTN_BACK, BTN_START, BTN_LEFT_THUMB, BTN_RIGHT_THUMB,
+                        BTN_DPAD_UP, BTN_DPAD_DOWN, BTN_DPAD_LEFT, BTN_DPAD_RIGHT] {
+            if released & btn_mask != 0 {
+                // In a real implementation, you'd queue an event to your input system
+            }
+        }
+    }
+}
+
+#[cfg(not(feature = "std"))]
+fn print_button_press(device_id: usize, button: u32) {
+    // Debug-only function to print button presses
+    // In a real kernel, this might go to a debug console or serial port
+    let name = match button {
+        BTN_A => "A",
+        BTN_B => "B",
+        BTN_X => "X",
+        BTN_Y => "Y",
+        BTN_LEFT_SHOULDER => "LB",
+        BTN_RIGHT_SHOULDER => "RB",
+        BTN_BACK => "Back",
+        BTN_START => "Start",
+        BTN_LEFT_THUMB => "L3",
+        BTN_RIGHT_THUMB => "R3",
+        BTN_DPAD_UP => "Up",
+        BTN_DPAD_DOWN => "Down",
+        BTN_DPAD_LEFT => "Left",
+        BTN_DPAD_RIGHT => "Right",
+        _ => "Unknown"
+    };
+    
+    // Print to debug output
+    // Could be serial console in a real kernel
+    unsafe {
+        let msg = alloc::format!("Gamepad {}: Button {} pressed\n", device_id, name);
+        for c in msg.bytes() {
+            x86_64::instructions::port::Port::new(0x3F8).write(c);
+        }
+    }
+}
+
+/// Process analog stick movement
+#[cfg(not(feature = "std"))]
+fn process_stick_movement(device_id: usize, stick_id: u8, x: i16, y: i16) {
+    // Handle analog stick movement
+    // Apply deadzone
+    let deadzone = 3200; // About 10% of full range
+    
+    if x.abs() < deadzone && y.abs() < deadzone {
+        return; // Inside deadzone, ignore tiny movements
+    }
+    
+    // In a real implementation, you would send this to your input system
+    // For now, we just track significant movements for debugging
+    if x.abs() > 16000 || y.abs() > 16000 {
+        // Log major stick movements
+        let stick_name = if stick_id == 0 { "Left" } else { "Right" };
+        let direction = if x.abs() > y.abs() {
+            if x > 0 { "Right" } else { "Left" }
+        } else {
+            if y > 0 { "Down" } else { "Up" }
+        };
+        
+        unsafe {
+            let msg = alloc::format!(
+                "Gamepad {}: {} stick moved {}\n", 
+                device_id, stick_name, direction
+            );
+            for c in msg.bytes() {
+                x86_64::instructions::port::Port::new(0x3F8).write(c);
+            }
+        }
+    }
+}
+
+/// Process trigger movement
+#[cfg(not(feature = "std"))]
+fn process_trigger_movement(device_id: usize, trigger_id: u8, value: u8) {
+    // Only process significant trigger changes
+    if value > 200 {
+        let trigger_name = if trigger_id == 0 { "Left" } else { "Right" };
+        
+        unsafe {
+            let msg = alloc::format!(
+                "Gamepad {}: {} trigger pressed ({})\n", 
+                device_id, trigger_name, value
+            );
+            for c in msg.bytes() {
+                x86_64::instructions::port::Port::new(0x3F8).write(c);
+            }
         }
     }
 }
