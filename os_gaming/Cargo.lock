@@ -2308,6 +2308,7 @@ dependencies = [
 name = "os_gaming"
 version = "0.1.0"
 dependencies = [
+ "bit_field",
  "directories",
  "eframe",
  "egui",
