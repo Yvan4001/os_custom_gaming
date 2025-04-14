@@ -1,5 +1,6 @@
 pub mod keyboard;
 pub mod vga;
+pub mod hdmi;
 pub mod mouse;
 pub mod sound;
 pub mod storage;
@@ -10,9 +11,16 @@ pub mod gamepad;
 pub mod filesystem;
 pub mod timer;
 pub mod power;
+pub mod displayport;
 
 use gamepad::GamepadManager;
 use keyboard::KeyboardState;
+use display::DisplayInfo;
+use power::PowerManager;
+use displayport::DisplayPortDriver;
+use hdmi::HdmiDriver;
+use vga::Writer;
+use sound::SoundDriver;
 use mouse::MouseState;
 use spin::Mutex;
 use lazy_static::lazy_static;
@@ -25,6 +33,11 @@ pub struct DriverManager {
     pub input_manager: InputManager,
     pub sound_system: sound::SoundDriver,
     pub power_manager: power::PowerManager,
+    pub filesystem_manager: filesystem::FilesystemManager,
+    pub timer_manager: timer::TimerManager,
+    pub displayport_manager: displayport::DisplayPortDriver,
+    pub hdmi_manager: hdmi::HdmiDriver,
+    pub vga_manager: vga::Writer,
 }
 
 /// Input device abstraction
@@ -59,15 +72,16 @@ pub fn init() -> Result<(), &'static str> {
     let usb_manager = usb::init()?;
     
     // Initialize input devices
-    let keyboard_state = keyboard::init();
+    keyboard::init();
     mouse::init();
-    let gamepad_manager = gamepad::init();
+    let gamepad_manager = gamepad::init()?;
     let mouse_state = mouse::MouseState::new();
+    let keyboard_state = KeyboardState::new();
     
     let input_manager = InputManager {
-        keyboard: KeyboardState::new(),
-        mouse: mouse_state,
-        gamepads: GamepadManager::new(),
+        keyboard: keyboard_state.into(),
+        mouse: mouse_state.into(),
+        gamepads: gamepad_manager.clone(),
     };
     
     // Initialize sound system
@@ -87,6 +101,11 @@ pub fn init() -> Result<(), &'static str> {
         input_manager,
         sound_system,
         power_manager : power::PowerManager::new(),
+        filesystem_manager: filesystem::FilesystemManager::new(),
+        timer_manager: timer::TimerManager::new(),
+        displayport_manager: DisplayPortDriver::new(),
+        hdmi_manager: HdmiDriver::new(),
+        vga_manager: Writer::new(),
     };
     
     // Store global reference

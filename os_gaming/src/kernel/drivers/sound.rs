@@ -49,6 +49,26 @@ pub struct SoundDriver {
     sb_dma16: u8,
 }
 
+impl SoundHardwareType {
+    pub fn get_name(&self) -> &str {
+        match self {
+            SoundHardwareType::None => "None",
+            SoundHardwareType::PcSpeaker => "PC Speaker",
+            SoundHardwareType::SoundBlaster16 => "Sound Blaster 16",
+            SoundHardwareType::HdAudio => "HD Audio",
+        }
+    }
+
+    pub fn get_device_type(&self) -> &str {
+        match self {
+            SoundHardwareType::None => "None",
+            SoundHardwareType::PcSpeaker => "PcSpeaker",
+            SoundHardwareType::SoundBlaster16 => "SoundBlaster16",
+            SoundHardwareType::HdAudio => "HdAudio",
+        }
+    }
+}
+
 impl SoundDriver {
     /// Create a new sound driver instance
     pub fn new() -> Self {
@@ -301,6 +321,25 @@ impl SoundDriver {
     /// Get the current volume
     pub fn get_volume(&self) -> u8 {
         self.volume
+    }
+
+    pub fn get_output_devices(&self) -> Vec<SoundHardwareType> {
+        let mut devices = Vec::new();
+        
+        if self.initialized.load(Ordering::SeqCst) {
+            devices.push(self.hardware_type);
+        }
+        
+        devices
+    }
+
+    pub fn get_name(&self) -> &str {
+        match self.hardware_type {
+            SoundHardwareType::SoundBlaster16 => "Sound Blaster 16",
+            SoundHardwareType::PcSpeaker => "PC Speaker",
+            SoundHardwareType::HdAudio => "HD Audio",
+            _ => "Unknown",
+        }
     }
 
     /// Play a sound sample

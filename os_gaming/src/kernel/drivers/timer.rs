@@ -55,7 +55,7 @@ pub struct TimerManager {
 
 impl TimerManager {
     /// Create a new timer manager instance
-    fn new() -> Self {
+    pub fn new() -> Self {
         Self {
             primary_source: TimerSource::PIT, // Default source
             initialized: false,

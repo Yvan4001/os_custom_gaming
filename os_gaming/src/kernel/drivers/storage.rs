@@ -24,6 +24,14 @@ pub struct StorageDevice {
     read_only: bool,
 }
 
+pub struct Partition {
+    device_name: String,
+    start_sector: u64,
+    sector_count: u64,
+    partition_type: u8,
+    bootable: bool,
+}
+
 /// Represents the storage subsystem
 pub struct StorageManager {
     devices: Vec<StorageDevice>,
@@ -132,6 +140,35 @@ impl StorageDevice {
     }
 }
 
+impl Partition {
+    /// Create a new partition
+    pub fn new(device_name: String, start_sector: u64, sector_count: u64, partition_type: u8, bootable: bool) -> Self {
+        Self {
+            device_name,
+            start_sector,
+            sector_count,
+            partition_type,
+            bootable,
+        }
+    }
+
+    pub fn get_start_sector(&self) -> u64 {
+        self.start_sector
+    }
+    pub fn get_sector_count(&self) -> u64 {
+        self.sector_count
+    }
+    pub fn get_partition_type(&self) -> u8 {
+        self.partition_type
+    }
+    pub fn is_bootable(&self) -> bool {
+        self.bootable
+    }
+    pub fn get_device_name(&self) -> &str {
+        &self.device_name
+    }
+}
+
 impl StorageManager {
     /// Create a new storage manager
     pub fn new() -> Self {
@@ -139,6 +176,92 @@ impl StorageManager {
             devices: Vec::new(),
             default_device: None,
         }
+    }
+
+    pub fn scan_partitions(&mut self, device_name: &str) -> Result<Vec<Partition>, &'static str> {
+        let device = self.get_device(device_name)
+            .ok_or("Device not found")?;
+        
+        // Read MBR (first sector)
+        let mut mbr_buffer = vec![0u8; device.get_sector_size() as usize];
+        device.read_sectors(0, 1, &mut mbr_buffer)?;
+        
+        // Check for valid MBR signature (last two bytes should be 0x55, 0xAA)
+        if mbr_buffer[510] != 0x55 || mbr_buffer[511] != 0xAA {
+            return Err("Invalid MBR signature");
+        }
+        
+        // Parse partition table (starts at offset 446)
+        let mut partitions = Vec::new();
+        for i in 0..4 {
+            let offset = 446 + i * 16;
+            
+            // Check if partition entry is used
+            let partition_type = mbr_buffer[offset + 4];
+            if partition_type == 0 {
+                continue; // Empty partition entry
+            }
+            
+            // Extract partition information
+            let bootable = mbr_buffer[offset] == 0x80;
+            let start_sector = u32::from_le_bytes([
+                mbr_buffer[offset + 8],
+                mbr_buffer[offset + 9],
+                mbr_buffer[offset + 10],
+                mbr_buffer[offset + 11],
+            ]) as u64;
+            
+            let sector_count = u32::from_le_bytes([
+                mbr_buffer[offset + 12],
+                mbr_buffer[offset + 13],
+                mbr_buffer[offset + 14],
+                mbr_buffer[offset + 15],
+            ]) as u64;
+            
+            partitions.push(Partition {
+                device_name: device_name.to_string(),
+                start_sector,
+                sector_count,
+                partition_type,
+                bootable,
+            });
+        }
+        
+        Ok(partitions)
+    }
+    
+    // Add method to read from a partition
+    pub fn read_partition(&self, partition: &Partition, relative_sector: u64, 
+                        count: u32, buffer: &mut [u8]) -> Result<(), &'static str> {
+        let device = self.get_device(&partition.device_name)
+            .ok_or("Device not found")?;
+        
+        if relative_sector + count as u64 > partition.sector_count {
+            return Err("Read exceeds partition bounds");
+        }
+        
+        // Convert relative sector to absolute sector
+        let absolute_sector = partition.start_sector + relative_sector;
+        
+        // Perform the read
+        device.read_sectors(absolute_sector, count, buffer)
+    }
+    
+    // Add method to write to a partition
+    pub fn write_partition(&self, partition: &Partition, relative_sector: u64, 
+                         count: u32, buffer: &[u8]) -> Result<(), &'static str> {
+        let device = self.get_device(&partition.device_name)
+            .ok_or("Device not found")?;
+        
+        if relative_sector + count as u64 > partition.sector_count {
+            return Err("Write exceeds partition bounds");
+        }
+        
+        // Convert relative sector to absolute sector
+        let absolute_sector = partition.start_sector + relative_sector;
+        
+        // Perform the write
+        device.write_sectors(absolute_sector, count, buffer)
     }
     
     /// Add a storage device to the manager

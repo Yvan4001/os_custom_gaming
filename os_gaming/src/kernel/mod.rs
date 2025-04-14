@@ -3,6 +3,7 @@ mod cpu;
 mod memory;
 mod interrupts;
 mod drivers;
+mod boot;
 
 // Re-export important items
 pub use cpu::init as cpu_init;

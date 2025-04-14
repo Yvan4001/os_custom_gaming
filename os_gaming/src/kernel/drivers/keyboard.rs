@@ -25,6 +25,7 @@ pub struct KeyboardState {
     shift_pressed: bool,
     ctrl_pressed: bool,
     alt_pressed: bool,
+    num_lock: bool,
 }
 
 pub fn new() -> KeyboardState {
@@ -33,6 +34,7 @@ pub fn new() -> KeyboardState {
         shift_pressed: false,
         ctrl_pressed: false,
         alt_pressed: false,
+        num_lock: false
     }
 }
 
@@ -43,6 +45,7 @@ pub struct KeyEvent {
     pub shift_pressed: bool,
     pub ctrl_pressed: bool,
     pub alt_pressed: bool,
+    pub num_lock: bool,
 }
 
 impl KeyboardState {
@@ -52,6 +55,7 @@ impl KeyboardState {
             shift_pressed: false,
             ctrl_pressed: false,
             alt_pressed: false,
+            num_lock: false,
         }
     }
 
@@ -69,7 +73,7 @@ impl KeyboardState {
 }
 
 // Map scancodes to ASCII characters (US QWERTY layout)
-fn map_scancode(scancode: u8, shift_pressed: bool) -> Option<char> {
+fn map_scancode(scancode: u8, shift_pressed: bool, num_lock: bool) -> Option<char> {
     let released = scancode & 0x80 != 0;
     if released {
         return None;
@@ -128,11 +132,40 @@ fn map_scancode(scancode: u8, shift_pressed: bool) -> Option<char> {
         0x34 => Some(if shift_pressed { '>' } else { '.' }),
         0x35 => Some(if shift_pressed { '?' } else { '/' }),
         0x39 => Some(' '),        // Space
+
+        // Numpad keys
+        0x47 => Some(if num_lock { '7' } else { '7' }), // Numpad 7 (Home)
+        0x48 => Some(if num_lock { '8' } else { '8' }), // Numpad 8 (Up)
+        0x49 => Some(if num_lock { '9' } else { '9' }), // Numpad 9 (Page Up)
+        0x4A => Some(if shift_pressed { '-' } else { '-' }), // Numpad Subtract
+        0x4B => Some(if num_lock { '4' } else { '4' }), // Numpad 4 (Left)
+        0x4C => Some(if num_lock { '5' } else { '5' }), // Numpad 5
+        0x4D => Some(if num_lock { '6' } else { '6' }), // Numpad 6 (Right)
+        0x4E => Some(if shift_pressed { '+' } else { '+' }), // Numpad Add
+        0x4F => Some(if num_lock { '1' } else { '1' }), // Numpad 1 (End)
+        0x50 => Some(if num_lock { '2' } else { '2' }), // Numpad 2 (Down)
+        0x51 => Some(if num_lock { '3' } else { '3' }), // Numpad 3 (Page Down)
+        0x52 => Some(if num_lock { '0' } else { '0' }), // Numpad 0 (Insert)
+        0x53 => Some(if num_lock { '.' } else { '.' }), // Numpad Decimal
+
+        // Additional special characters
+        0x3A => Some(if shift_pressed { ':' } else { ';' }), // ; and :
+        0x3B => Some(if shift_pressed { '+' } else { '=' }), // = and +
+        0x3C => Some(if shift_pressed { '<' } else { ',' }), // , and <
+        0x3D => Some(if shift_pressed { '-' } else { '-' }), // - and -
+        0x3E => Some(if shift_pressed { '>' } else { '.' }), // . and >
+        0x3F => Some(if shift_pressed { '?' } else { '/' }), // / and ?
+        0x40 => Some(if shift_pressed { '@' } else { '\'' }), // ' and @
+        0x41 => Some(if shift_pressed { '[' } else { '[' }), // [ and {
+        0x42 => Some(if shift_pressed { ']' } else { ']' }), // ] and }
+        0x43 => Some(if shift_pressed { '\\' } else { '\\' }), // \ and |
+
         _ => None,
     };
-    
+
     character
 }
+
 
 // Keyboard interrupt handler
 pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: interrupts::InterruptStackFrame) {
@@ -149,13 +182,14 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: interrupt
     keyboard.update_modifiers(scancode);
     
     // Convert scancode to character
-    if let Some(key) = map_scancode(scancode, keyboard.shift_pressed) {
+    if let Some(key) = map_scancode(scancode, keyboard.shift_pressed, keyboard.num_lock) {
         let event = KeyEvent {
             character: key,
             scancode,
             shift_pressed: keyboard.shift_pressed,
             ctrl_pressed: keyboard.ctrl_pressed,
             alt_pressed: keyboard.alt_pressed,
+            num_lock: keyboard.num_lock,
         };
         
         #[cfg(feature = "std")]

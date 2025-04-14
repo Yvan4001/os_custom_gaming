@@ -66,6 +66,13 @@ pub struct Writer {
 }
 
 impl Writer {
+    pub fn new() -> Writer {
+        Writer {
+            column_position: 0,
+            color_code: ColorCode::new(Color::LightGray, Color::Black),
+            buffer: unsafe { &mut *(VGA_BUFFER_ADDRESS as *mut Buffer) },
+        }
+    }
     pub fn write_byte(&mut self, byte: u8) {
         match byte {
             b'\n' => self.new_line(),

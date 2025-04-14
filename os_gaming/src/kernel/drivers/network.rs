@@ -9,6 +9,11 @@ pub const ETHERTYPE_IPV4: u16 = 0x0800;
 pub const ETHERTYPE_ARP: u16 = 0x0806;
 pub const ETHERTYPE_IPV6: u16 = 0x86DD;
 
+//Common Wireless types
+pub const WIRELESS_IPV4: u16 = 0x0800;
+pub const WIRELESS_ARP: u16 = 0x0806;
+pub const WIRELESS_IPV6: u16 = 0x86DD;
+
 /// Network card types that we can support
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum NetworkCardType {
@@ -57,7 +62,68 @@ pub struct EthernetFrame {
     pub payload: Vec<u8>,
 }
 
+pub struct WirelessFrame {
+    pub destination: [u8; 6],
+    pub source: [u8; 6],
+    pub ethertype: u16,
+    pub payload: Vec<u8>,
+}
+
 impl EthernetFrame {
+    pub fn new(dest: [u8; 6], src: [u8; 6], ethertype: u16, payload: Vec<u8>) -> Self {
+        Self {
+            destination: dest,
+            source: src,
+            ethertype,
+            payload,
+        }
+    }
+
+    /// Convert frame to byte array for transmission
+    pub fn to_bytes(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(14 + self.payload.len());
+
+        // Add destination MAC
+        bytes.extend_from_slice(&self.destination);
+
+        // Add source MAC
+        bytes.extend_from_slice(&self.source);
+
+        // Add EtherType (in big-endian)
+        bytes.push((self.ethertype >> 8) as u8);
+        bytes.push((self.ethertype & 0xFF) as u8);
+
+        // Add payload
+        bytes.extend_from_slice(&self.payload);
+
+        bytes
+    }
+
+    /// Parse a byte slice into an Ethernet frame
+    pub fn from_bytes(bytes: &[u8]) -> Option<Self> {
+        if bytes.len() < 14 {
+            return None; // Frame too small
+        }
+
+        let mut destination = [0u8; 6];
+        let mut source = [0u8; 6];
+
+        destination.copy_from_slice(&bytes[0..6]);
+        source.copy_from_slice(&bytes[6..12]);
+
+        let ethertype = ((bytes[12] as u16) << 8) | (bytes[13] as u16);
+        let payload = bytes[14..].to_vec();
+
+        Some(Self {
+            destination,
+            source,
+            ethertype,
+            payload,
+        })
+    }
+}
+
+impl WirelessFrame {
     pub fn new(dest: [u8; 6], src: [u8; 6], ethertype: u16, payload: Vec<u8>) -> Self {
         Self {
             destination: dest,
