@@ -4,6 +4,7 @@
 use std::process;
 
 use os_gaming::{self, Config};
+use os_gaming::system::init;
 
 fn main() {
     #[cfg(feature = "std")]

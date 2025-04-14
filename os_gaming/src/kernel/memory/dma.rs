@@ -16,7 +16,7 @@ pub struct DmaBuffer {
 }
 
 #[derive(Clone, Copy)]
-enum DmaAddressLimit {
+pub enum DmaAddressLimit {
     /// 24-bit addressing (ISA DMA, < 16MB)
     Bits24,
     /// 32-bit addressing (< 4GB)
@@ -34,12 +34,20 @@ pub struct DmaAllocOptions {
     pub align: usize,
 }
 
-#[derive(Clone, Copy)]
-struct DmaRegion {
-    phys_addr: usize,
-    virt_addr: usize,
-    size: usize,
-    limit: DmaAddressLimit,
+pub enum DmaType {
+    /// Coherent memory (no cache management needed)
+    Coherent,
+    /// Non-coherent memory (requires explicit cache management)
+    NonCoherent,
+    
+}
+
+pub struct DmaRegion {
+    pub phys_addr: usize,
+    pub virt_addr: usize,
+    pub size: usize,
+    pub dma_type : DmaType,
+    pub limit: DmaAddressLimit,
 }
 
 impl Default for DmaAllocOptions {
@@ -460,6 +468,7 @@ fn allocate_dma_region(
         phys_addr: 0x1000000, // Example physical address
         virt_addr: 0xFFFF800001000000, // Example virtual address
         size,
+        dma_type: DmaType::Coherent, // Example type
         limit,
     })
 }

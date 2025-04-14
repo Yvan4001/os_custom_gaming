@@ -347,6 +347,75 @@ pub fn sleep(ms: u64) {
     manager.sleep(ms);
 }
 
+/// Start the system timer with game loop and task scheduling capabilities
+pub fn start_system_timer() {
+    // Make sure the timer system is initialized
+    if let Err(e) = init() {
+        #[cfg(feature = "log")]
+        log::error!("Failed to initialize timer: {}", e);
+        return;
+    }
+
+    // Start PIT timer for system-wide timing
+    #[cfg(not(feature = "std"))]
+    {
+        // Ensure timer interrupts are enabled
+        let mut manager = TIMER_MANAGER.lock();
+        
+        // Configure a higher precision timer rate for games (e.g., 1000Hz)
+        if !manager.initialized {
+            if let Err(_) = manager.init_pit(1000) {
+                #[cfg(feature = "log")]
+                log::error!("Failed to configure PIT for high precision timing");
+            }
+            manager.initialized = true;
+        }
+        
+        // Register the timer interrupt handler with the IDT
+        unsafe {
+            crate::kernel::interrupts::register_timer_handler(timer_interrupt_handler);
+        }
+        
+        // Enable timer interrupts
+        unsafe {
+            crate::kernel::interrupts::enable_timer_interrupt();
+        }
+        
+        #[cfg(feature = "log")]
+        log::info!("System timer started with {} Hz tick rate", manager.tick_rate);
+        
+        // Set up the task scheduler for periodic tasks
+        init_task_scheduler();
+    }
+    
+    #[cfg(feature = "std")]
+    {
+        // In std environment, start a background thread for timer simulation
+        std::thread::spawn(|| {
+            let tick_duration = std::time::Duration::from_millis(1);
+            loop {
+                // Increment the system tick counter
+                TICKS.fetch_add(1, Ordering::SeqCst);
+                
+                // Process any scheduled tasks
+                process_scheduled_tasks();
+                
+                // Sleep to simulate the timer interrupt
+                std::thread::sleep(tick_duration);
+            }
+        });
+        
+        #[cfg(feature = "log")]
+        log::info!("System timer started in simulation mode");
+    }
+    
+    // Initialize the performance counter for high-precision game timing
+    init_performance_counter();
+    
+    #[cfg(feature = "log")]
+    log::info!("Game loop timing system initialized");
+}
+
 /// Get uptime in milliseconds
 pub fn uptime_ms() -> u64 {
     let manager = TIMER_MANAGER.lock();
@@ -525,4 +594,308 @@ pub struct FrameTiming {
     pub frame_time_us: u64,   // Time taken for last frame (microseconds)
     pub fps: f64,             // Frames per second
     pub avg_frame_time_us: u64, // Average frame time over last 60 frames
+}
+
+/// Process scheduled tasks at their appropriate intervals
+#[inline]
+fn process_scheduled_tasks() {
+    // Access the global task list (protected by mutex)
+    if let Some(mut tasks) = SCHEDULED_TASKS.try_lock() {
+        let current_tick = TICKS.load(Ordering::SeqCst);
+        
+        // Process all due tasks
+        for task in tasks.iter_mut() {
+            if task.enabled && current_tick >= task.next_execution {
+                // Execute the task callback
+                (task.callback)();
+                
+                // Schedule next execution
+                if task.interval > 0 {
+                    task.next_execution = current_tick + task.interval;
+                } else {
+                    // One-shot task, disable it
+                    task.enabled = false;
+                }
+            }
+        }
+    }
+}
+
+/// Initialize the task scheduler for periodic events
+fn init_task_scheduler() {
+    lazy_static! {
+        /// List of scheduled tasks to run at specific intervals
+        static ref SCHEDULED_TASKS: Mutex<Vec<ScheduledTask>> = Mutex::new(Vec::with_capacity(32));
+    }
+    
+    // Initialize with some system tasks
+    let mut tasks = SCHEDULED_TASKS.lock();
+    
+    // Add task for updating system stats every second
+    tasks.push(ScheduledTask {
+        name: "system_stats_update",
+        interval: DEFAULT_TICK_RATE as u64, // 1 second
+        next_execution: DEFAULT_TICK_RATE as u64, // Start after 1 second
+        callback: || {
+            update_system_stats();
+        },
+        enabled: true,
+    });
+    
+    // Add task for polling input devices at 100Hz
+    tasks.push(ScheduledTask {
+        name: "input_polling",
+        interval: DEFAULT_TICK_RATE as u64 / 100, // 10ms (100Hz)
+        next_execution: DEFAULT_TICK_RATE as u64 / 100, // Start after 10ms
+        callback: || {
+            poll_input_devices();
+        },
+        enabled: true,
+    });
+}
+
+/// Initialize high-precision performance counter for game timing
+fn init_performance_counter() {
+    // Set up high-precision timing using the best available timer source
+    let mut manager = TIMER_MANAGER.lock();
+    
+    // Calibrate TSC if available for maximum precision
+    if !manager.calibrated {
+        manager.calibrate_tsc();
+    }
+    
+    // Initialize game loop timing data
+    GAME_TIMING.lock().last_frame_time = manager.timestamp_ns();
+    
+    #[cfg(feature = "log")]
+    {
+        let source_name = match manager.primary_source {
+            TimerSource::TSC => "Time Stamp Counter",
+            TimerSource::HPET => "High Precision Event Timer",
+            TimerSource::PIT => "Programmable Interval Timer",
+            TimerSource::APIC => "APIC Timer",
+        };
+        
+        log::info!("Game performance counter initialized using {} at {} MHz", 
+                 source_name, CPU_MHZ.load(Ordering::SeqCst));
+    }
+}
+
+/// Update system statistics
+fn update_system_stats() {
+    #[cfg(feature = "log")]
+    {
+        let manager = TIMER_MANAGER.lock();
+        let uptime_secs = manager.uptime_ms() / 1000;
+        log::trace!("System uptime: {}s, CPU: {} MHz", uptime_secs, CPU_MHZ.load(Ordering::SeqCst));
+    }
+}
+
+/// Poll input devices for game controllers, keyboard, etc.
+fn poll_input_devices() {
+    // Call into input driver to poll devices
+    #[cfg(not(feature = "std"))]
+    {
+        // Check for new input events
+        if let Some(input) = crate::kernel::drivers::input::poll_events() {
+            // Process input events
+            process_input_event(input);
+        }
+    }
+}
+
+/// Process a game input event
+fn process_input_event(input: InputEvent) {
+    // Call registered input handlers
+    if let Some(handlers) = INPUT_HANDLERS.try_lock() {
+        for handler in handlers.iter() {
+            (handler)(input);
+        }
+    }
+}
+
+/// A scheduled task in the timer system
+struct ScheduledTask {
+    /// Name of the task
+    name: &'static str,
+    /// Interval in system ticks (0 for one-shot tasks)
+    interval: u64,
+    /// Next execution time in system ticks
+    next_execution: u64,
+    /// Function to call when the task is due
+    callback: fn(),
+    /// Whether the task is enabled
+    enabled: bool,
+}
+
+/// Game timing information
+struct GameTiming {
+    /// Timestamp of the last frame
+    last_frame_time: u64,
+    /// Target frame rate (0 for unlimited)
+    target_fps: u64,
+    /// Minimum frame time in ns (based on target FPS)
+    min_frame_time_ns: u64,
+    /// Fixed time step for physics (ns)
+    fixed_time_step_ns: u64,
+    /// Accumulated time for fixed updates
+    accumulated_time_ns: u64,
+}
+
+lazy_static! {
+    /// Global game timing information
+    static ref GAME_TIMING: Mutex<GameTiming> = Mutex::new(GameTiming {
+        last_frame_time: 0,
+        target_fps: 60,
+        min_frame_time_ns: 16_666_667, // 60 FPS (1s / 60 = 16.67ms)
+        fixed_time_step_ns: 16_666_667, // 60Hz physics updates
+        accumulated_time_ns: 0,
+    });
+    
+    /// Input event handlers
+    static ref INPUT_HANDLERS: Mutex<Vec<fn(InputEvent)>> = Mutex::new(Vec::new());
+    
+    /// Scheduled tasks
+    static ref SCHEDULED_TASKS: Mutex<Vec<ScheduledTask>> = Mutex::new(Vec::new());
+}
+
+/// Represents an input event
+#[derive(Clone, Copy, Debug)]
+pub struct InputEvent {
+    // Input event fields would go here
+    // For example:
+    pub event_type: InputEventType,
+    pub device_id: u8,
+    pub data: [u32; 4],  // Generic data array for different event types
+}
+
+/// Types of input events
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum InputEventType {
+    KeyPress,
+    KeyRelease,
+    MouseMove,
+    MouseButton,
+    GamepadButton,
+    GamepadAxis,
+    Touch,
+    Gesture,
+}
+
+/// Schedule a one-time task to run after the specified delay
+pub fn schedule_task(name: &'static str, delay_ms: u64, callback: fn()) -> Result<(), &'static str> {
+    let ticks_delay = (delay_ms * DEFAULT_TICK_RATE as u64) / 1000;
+    let current_tick = TICKS.load(Ordering::SeqCst);
+    
+    if let Some(mut tasks) = SCHEDULED_TASKS.try_lock() {
+        tasks.push(ScheduledTask {
+            name,
+            interval: 0, // One-time task
+            next_execution: current_tick + ticks_delay,
+            callback,
+            enabled: true,
+        });
+        Ok(())
+    } else {
+        Err("Failed to acquire task list lock")
+    }
+}
+
+/// Schedule a periodic task to run at the specified interval
+pub fn schedule_periodic_task(name: &'static str, interval_ms: u64, callback: fn()) -> Result<(), &'static str> {
+    let ticks_interval = (interval_ms * DEFAULT_TICK_RATE as u64) / 1000;
+    let current_tick = TICKS.load(Ordering::SeqCst);
+    
+    if let Some(mut tasks) = SCHEDULED_TASKS.try_lock() {
+        tasks.push(ScheduledTask {
+            name,
+            interval: ticks_interval,
+            next_execution: current_tick + ticks_interval,
+            callback,
+            enabled: true,
+        });
+        Ok(())
+    } else {
+        Err("Failed to acquire task list lock")
+    }
+}
+
+/// Register an input handler function
+pub fn register_input_handler(handler: fn(InputEvent)) {
+    if let Some(mut handlers) = INPUT_HANDLERS.try_lock() {
+        handlers.push(handler);
+    }
+}
+
+/// Set target frame rate for the game loop
+pub fn set_target_fps(fps: u64) {
+    if fps == 0 {
+        // Unlimited FPS
+        GAME_TIMING.lock().target_fps = 0;
+        GAME_TIMING.lock().min_frame_time_ns = 0;
+    } else {
+        GAME_TIMING.lock().target_fps = fps;
+        GAME_TIMING.lock().min_frame_time_ns = 1_000_000_000 / fps;
+    }
+}
+
+/// Wait for next frame (respecting target FPS)
+pub fn wait_for_next_frame() -> (u64, f64) {
+    let mut timing = GAME_TIMING.lock();
+    let now = timestamp_ns();
+    let elapsed = now - timing.last_frame_time;
+    
+    // If we have a target frame rate, wait until it's time for the next frame
+    if timing.target_fps > 0 && elapsed < timing.min_frame_time_ns {
+        let wait_time = timing.min_frame_time_ns - elapsed;
+        
+        // For very short waits, use spin loop for precision
+        if wait_time < 1_000_000 { // Less than 1ms
+            let end_time = now + wait_time;
+            while timestamp_ns() < end_time {
+                core::hint::spin_loop();
+            }
+        } else {
+            // For longer waits, use sleep
+            sleep(wait_time / 1_000_000);
+        }
+    }
+    
+    // Get final frame time
+    let final_time = timestamp_ns();
+    let frame_time = final_time - timing.last_frame_time;
+    timing.last_frame_time = final_time;
+    
+    // Calculate FPS
+    let fps = if frame_time > 0 {
+        1_000_000_000.0 / frame_time as f64
+    } else {
+        0.0
+    };
+    
+    (frame_time / 1_000, fps) // Return frame time in microseconds and FPS
+}
+
+/// Run fixed time step updates (for physics, etc.)
+pub fn run_fixed_updates(update_fn: fn(f64)) -> usize {
+    let mut timing = GAME_TIMING.lock();
+    let now = timestamp_ns();
+    let frame_time = now - timing.last_frame_time;
+    
+    // Add elapsed time to accumulator
+    timing.accumulated_time_ns += frame_time;
+    
+    // Run as many fixed updates as needed
+    let mut updates_run = 0;
+    while timing.accumulated_time_ns >= timing.fixed_time_step_ns {
+        // Run the update with delta time in seconds
+        update_fn(timing.fixed_time_step_ns as f64 / 1_000_000_000.0);
+        
+        // Subtract fixed step from accumulator
+        timing.accumulated_time_ns -= timing.fixed_time_step_ns;
+        updates_run += 1;
+    }
+    
+    // Return number of updates run
+    updates_run
 }

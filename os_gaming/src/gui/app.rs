@@ -67,7 +67,7 @@ impl eframe::App for OsGamingApp {
             self.update_system_info();
         if ui.button("Test Sound").clicked() {
             // Play a simple beep
-            let _ = crate::kernel::drivers::sound_system::beep(440, 200);
+            let _ = crate::kernel::drivers::sound::beep(440, 200);
         }
         }
 

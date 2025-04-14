@@ -516,6 +516,11 @@ pub fn reboot() -> Result<(), &'static str> {
     manager.reboot()
 }
 
+pub fn enter_sleep_mode() -> Result<(), &'static str> {
+    let mut manager = POWER_MANAGER.lock();
+    manager.set_power_state(PowerState::S3)
+}
+
 /// Shutdown the system
 pub fn shutdown() -> Result<(), &'static str> {
     let manager = POWER_MANAGER.lock();

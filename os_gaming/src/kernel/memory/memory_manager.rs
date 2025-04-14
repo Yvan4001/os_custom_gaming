@@ -105,42 +105,41 @@ impl MemoryManager {
             kernel_heap_used: 0,
         }
     }
+    pub fn init() -> Result<(), &'static str> {
+        if INITIALIZED.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+        
+        #[cfg(not(feature = "std"))]
+        {
+            // Initialize physical memory management first
+            physical::init()?;
+            
+            // Then virtual memory (paging)
+            virtual_mem::init()?;
+            
+            // Set up the kernel heap
+            heap::init(1024 * 1024 * 64)?; // 64MB heap initially
+            
+            // Initialize DMA memory management
+            dma::init()?;
+            
+            // Initialize memory-mapped I/O regions
+            mmap::init()?;
+        }
+        
+        INITIALIZED.store(true, Ordering::SeqCst);
+        
+        #[cfg(feature = "std")]
+        log::info!("Memory management initialized (simulated mode)");
+        
+        #[cfg(not(feature = "std"))]
+        log::info!("Memory management initialized");
+        
+        Ok(())
+    }    
 }
 
-/// Initialize the memory management system
-pub fn init() -> Result<(), &'static str> {
-    if INITIALIZED.load(Ordering::SeqCst) {
-        return Ok(());
-    }
-    
-    #[cfg(not(feature = "std"))]
-    {
-        // Initialize physical memory management first
-        physical::init()?;
-        
-        // Then virtual memory (paging)
-        virtual_mem::init()?;
-        
-        // Set up the kernel heap
-        heap::init(1024 * 1024 * 64)?; // 64MB heap initially
-        
-        // Initialize DMA memory management
-        dma::init()?;
-        
-        // Initialize memory-mapped I/O regions
-        mmap::init()?;
-    }
-    
-    INITIALIZED.store(true, Ordering::SeqCst);
-    
-    #[cfg(feature = "std")]
-    log::info!("Memory management initialized (simulated mode)");
-    
-    #[cfg(not(feature = "std"))]
-    log::info!("Memory management initialized");
-    
-    Ok(())
-}
 
 /// Get the current page table
 #[cfg(not(feature = "std"))]
@@ -203,5 +202,4 @@ impl MemoryInfo {
             page_size: 4096,
         }
     }
-    
 }

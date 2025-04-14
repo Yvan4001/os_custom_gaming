@@ -69,3 +69,16 @@ pub struct MemoryStats {
     pub available_swap: usize,   // Available swap space in bytes
     pub kernel_heap_used: usize, // Kernel heap usage in bytes
 }
+
+pub fn init() -> Result<(), &'static str> {
+    // Initialize the memory management subsystem
+    memory_init(0)?;
+    
+    // Initialize the memory manager
+    let _ = MEMORY_MANAGER.lock();
+    
+    // Call the init function directly
+    memory_manager::MemoryManager::init()?;
+    
+    Ok(())
+}

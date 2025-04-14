@@ -18,7 +18,7 @@ pub struct MouseState {
     pub relative_y: i32,
 }
 
-struct Mouse {
+pub struct Mouse {
     state: MouseState,
     data_port: PortReadOnly<u8>,
     command_port: PortWriteOnly<u8>,
@@ -39,6 +39,20 @@ impl MouseState {
         }
     }
 }
+
+impl Clone for MouseState {
+    fn clone(&self) -> Self {
+        Self {
+            x: self.x,
+            y: self.y,
+            buttons: self.buttons,
+            scroll_wheel: self.scroll_wheel,
+            relative_x: self.relative_x,
+            relative_y: self.relative_y,
+        }
+    }
+}
+
 
 impl Mouse {
     fn new() -> Self {
@@ -161,4 +175,78 @@ pub fn get_state() -> MouseState {
         relative_x: mouse.state.relative_x,
         relative_y: mouse.state.relative_y,
     }
+}
+
+pub fn get_pending_events() -> Result<Vec<MouseState>, &'static str> {
+    // Static for tracking previous state to detect changes
+    static mut PREV_STATE: Option<MouseState> = None;
+    static mut EVENT_BUFFER: Option<Vec<MouseState>> = None;
+
+    // Initialize event buffer if needed
+    unsafe {
+        if EVENT_BUFFER.is_none() {
+            EVENT_BUFFER = Some(Vec::with_capacity(16));
+        }
+    }
+
+    let mut mouse = MOUSE.lock();
+    let mut events = Vec::new();
+
+    // Get current state
+    let current_state = MouseState {
+        x: mouse.state.x,
+        y: mouse.state.y,
+        buttons: mouse.state.buttons,
+        scroll_wheel: mouse.state.scroll_wheel,
+        // Calculate relative movement since last poll
+        relative_x: unsafe {
+            if let Some(prev) = &PREV_STATE {
+                mouse.state.x - prev.x
+            } else {
+                0
+            }
+        },
+        relative_y: unsafe {
+            if let Some(prev) = &PREV_STATE {
+                mouse.state.y - prev.y
+            } else {
+                0
+            }
+        },
+    };
+
+    // Check if state has changed significantly
+    let has_changes = unsafe {
+        if let Some(prev) = &PREV_STATE {
+            // Detect any relevant change
+            current_state.x != prev.x ||
+            current_state.y != prev.y ||
+            current_state.buttons != prev.buttons ||
+            current_state.scroll_wheel != prev.scroll_wheel
+        } else {
+            // First call, report initial state
+            true
+        }
+    };
+
+    // If there were changes, add to event list
+    if has_changes {
+        events.push(current_state.clone());
+    }
+
+    // Check if there are any events in the buffer
+    unsafe {
+        if let Some(ref mut buffer) = EVENT_BUFFER {
+            // Add any buffered events
+            events.append(buffer);
+            buffer.clear();
+        }
+    }
+
+    // Update previous state for next call
+    unsafe {
+        PREV_STATE = Some(current_state);
+    }
+
+    Ok(events)
 }

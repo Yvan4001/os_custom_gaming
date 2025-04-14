@@ -47,6 +47,8 @@ pub struct KeyEvent {
     pub ctrl_pressed: bool,
     pub alt_pressed: bool,
     pub num_lock: bool,
+    pub key_code: u16,
+    pub modifiers: u8,
 }
 
 impl KeyboardState {
@@ -190,6 +192,8 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
             ctrl_pressed: keyboard.ctrl_pressed,
             alt_pressed: keyboard.alt_pressed,
             num_lock: keyboard.num_lock,
+            key_code: scancode as u16,
+            modifiers: 0,
         };
         
         #[cfg(feature = "std")]
@@ -251,4 +255,26 @@ pub fn handle_interrupt() {
     unsafe {
         interrupts::PICS.notify_end_of_interrupt(interrupts::KEYBOARD_INTERRUPT_INDEX);
     }
+}
+
+pub fn get_pending_events() -> Result<Vec<KeyEvent>, ()> {
+    let state = KEYBOARD_STATE.lock();
+    let scancode = state.scancode;
+    let shift_pressed = state.shift_pressed;
+    let ctrl_pressed = state.ctrl_pressed;
+    let alt_pressed = state.alt_pressed;
+    let num_lock = state.num_lock;
+    
+    let event = KeyEvent {
+        character: map_scancode(scancode, shift_pressed, num_lock).unwrap_or('\0'),
+        scancode,
+        shift_pressed,
+        ctrl_pressed,
+        alt_pressed,
+        num_lock,
+        key_code: scancode as u16,
+        modifiers: 0,
+    };
+    
+    Ok(vec![event])
 }
