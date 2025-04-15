@@ -1176,3 +1176,9 @@ fn stop_sb16_playback(driver: &SoundDriver) {
     #[cfg(feature = "std")]
     log::trace!("SB16 playback stopped");
 }
+
+pub fn shutdown() {
+    let mut driver = SOUND_DRIVER.lock();
+    driver.stop_playback().unwrap_or_default();
+    driver.initialized.store(false, Ordering::SeqCst);
+}

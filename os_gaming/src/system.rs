@@ -191,12 +191,8 @@ impl System {
         
         // 4. Initialize filesystem
         log::info!("Initializing filesystem...");
-        FilesystemManager::init(None).map_err(|e| {
-            log::error!("Filesystem initialization failed: {}", e);
-            "Filesystem initialization failed"
-        })?;
+        FilesystemManager::init();
     
-        
         // Initialize GUI subsystems
         log::info!("Initializing GUI subsystems...");
         
@@ -453,19 +449,27 @@ impl System {
         log::info!("Shutting down subsystems...");
         
         if self.network_enabled {
-            drivers::network::shutdown().ok();
+            drivers::network::shutdown();
         }
         
         if self.audio_enabled {
-            drivers::sound::shutdown().ok();
+            drivers::sound::shutdown();
         }
         
         // Shutdown filesystem
-        fs::shutdown().ok();
+        fs::shutdown();
         
         // Perform platform-specific shutdown
         log::info!("Goodbye!");
+        
+        // This function must not return, so it should call a diverging function
         kernel::drivers::power::shutdown();
+        
+        // In case shutdown returns (which it shouldn't)
+        loop {
+            // Halt the CPU
+            core::hint::spin_loop();
+        }
     }
     
     /// Save system state before shutdown
@@ -529,12 +533,7 @@ impl System {
         }
         
         // Start the application
-        if let Err(e) = scheduler::spawn_task(move || {
-            app.run(window_id);
-        }) {
-            log::error!("Failed to spawn application task: {:?}", e);
-            return Err("Failed to start application");
-        }
+        app.run(window_id);
         
         // Show the window
         if let Some(wm) = &self.window_manager {

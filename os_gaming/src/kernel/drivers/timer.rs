@@ -899,3 +899,25 @@ pub fn run_fixed_updates(update_fn: fn(f64)) -> usize {
     // Return number of updates run
     updates_run
 }
+
+pub fn get_system_time_ms() -> u64 {
+    #[cfg(feature = "std")]
+    {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis() as u64
+    }
+    
+    #[cfg(not(feature = "std"))]
+    {
+        // Use system timer or PIT/TSC for timestamp
+        crate::kernel::drivers::timer::get_timestamp_ms()
+    }
+}
+
+pub fn get_timestamp_ms() -> u64 {
+    let manager = TIMER_MANAGER.lock();
+    manager.uptime_ms()
+}

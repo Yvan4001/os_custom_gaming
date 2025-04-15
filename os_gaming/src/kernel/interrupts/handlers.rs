@@ -1,6 +1,7 @@
 //! Interrupt handlers for various interrupts
 
-use x86_64::structures::idt::{InterruptStackFrame, PageFaultErrorCode};
+use x86_64::structures::idt::InterruptStackFrame;
+use x86_64::structures::idt::{PageFaultErrorCode};
 use crate::kernel::drivers::keyboard;
 use crate::kernel::drivers::sound;
 use crate::kernel::drivers::gamepad;
@@ -80,6 +81,21 @@ pub extern "x86-interrupt" fn stack_segment_fault_handler(
 ) {
     panic!(
         "EXCEPTION: STACK SEGMENT FAULT (error code: {})\n{:#?}",
+        error_code, stack_frame
+    );
+}
+
+pub extern  "x86-interrupt" fn spawn_task_handler(stack_frame: InterruptStackFrame) {
+    panic!("EXCEPTION: SPAWN TASK\n{:#?}", stack_frame);
+}
+
+pub extern "x86-interrupt" fn spawn_task(
+    stack_frame: InterruptStackFrame,
+    error_code: u64,
+    param: u64, // Add the parameter here
+) {
+    panic!(
+        "EXCEPTION: SPAWN TASK (error code: {})\n{:#?}",
         error_code, stack_frame
     );
 }

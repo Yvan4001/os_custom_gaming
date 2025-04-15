@@ -276,7 +276,7 @@ impl NetworkInterface {
     }
 
     /// Deactivate the network interface
-    pub fn deactivate(&mut self) {
+    pub fn desactivate(&mut self) {
         self.active.store(false, Ordering::SeqCst);
     }
 
@@ -1043,4 +1043,27 @@ pub fn handle_gaming_interrupt() {
     // This is a placeholder for actual interrupt handling
     #[cfg(feature = "std")]
     log::info!("Gaming interrupt handled");
+}
+
+pub fn shutdown() {
+    // Shutdown the network subsystem
+    #[cfg(feature = "std")]
+    log::info!("Network subsystem shutting down");
+    
+    // Create a network manager instance first
+    if let Ok(mut network_manager) = NetworkManager::new() {
+        // First collect all interface names to avoid borrowing issues
+        let interface_names: Vec<String> = network_manager
+            .get_interfaces()
+            .iter()
+            .map(|iface| iface.get_name().to_string())
+            .collect();
+            
+        // Then deactivate all interfaces using the collected names
+        for name in interface_names {
+            if let Some(interface) = network_manager.get_interface_mut(&name) {
+                interface.desactivate();
+            }
+        }
+    }
 }

@@ -490,6 +490,10 @@ impl Filesystem {
         }
     }
 
+    pub fn shutdown(&mut self) {
+        self.mounted.store(false, Ordering::SeqCst);
+    }
+
     pub fn mount(&mut self) -> Result<(), &'static str> {
         if self.mounted.load(Ordering::SeqCst) {
             return Ok(());
@@ -1008,6 +1012,11 @@ impl FilesystemManager {
             current_directory: "/".to_string(),
         }
     }
+    pub fn init() {
+        // Initialize the filesystem manager
+        let mut fs_manager = FS_MANAGER.lock();
+        *fs_manager = FilesystemManager::new();
+    }
     pub fn detect_filesystem_type(
         &self,
         storage_manager: &StorageManager,
@@ -1282,5 +1291,14 @@ fn split_path(path: &str) -> Result<(&str, &str), &'static str> {
     } else {
         // No slash, so it's in the root directory
         Ok(("/", path))
+    }
+}
+
+pub fn shutdown() {
+    // Get a mutable reference to the filesystem manager and shutdown all mounted filesystems
+    if let Some(mut fs_manager) = FS_MANAGER.try_lock() {
+        for fs in fs_manager.filesystems.iter_mut() {
+            fs.shutdown();
+        }
     }
 }

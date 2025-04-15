@@ -1,10 +1,11 @@
 //! Interrupt Descriptor Table setup and management
 use super::IDT;
-use super::handlers;
-use x86_64::structures::idt::InterruptStackFrame;
-use x86_64::structures::idt::PageFaultErrorCode;
+use core::fmt;
+use crate::kernel::interrupts::handlers;
+use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
-/// Initialize the Interrupt Descriptor Table with default handlers
+/// Initialize the Interrupt Descriptor Table with default handler
+
 pub fn init() {
     let mut idt = IDT.lock();
     
