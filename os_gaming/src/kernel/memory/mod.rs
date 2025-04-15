@@ -6,8 +6,8 @@
 
 mod dma;
 mod memory_manager;
-mod physical;
-mod r#virtual;
+pub mod physical;
+pub mod r#virtual;
 mod allocator;
 
 use spin::Mutex;
@@ -40,6 +40,11 @@ pub fn memory_init(multiboot_info_addr: usize) -> Result<(), &'static str> {
 pub fn allocate_virtual(size: usize, align: usize) -> Result<*mut u8, MemoryError> {
     let mut manager = MEMORY_MANAGER.lock();
     manager.allocate(size, align)
+}
+
+pub fn deallocate_virtual(ptr: *mut u8) {
+    let mut manager = MEMORY_MANAGER.lock();
+    manager.deallocate(ptr);
 }
 
 /// Free previously allocated virtual memory

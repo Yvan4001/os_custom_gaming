@@ -80,18 +80,48 @@ impl MemoryManager {
     /// Allocate memory with the specified size and alignment
     pub fn allocate(&mut self, size: usize, align: usize) -> Result<*mut u8, MemoryError> {
         // Placeholder implementation
-        Err(MemoryError::OutOfMemory)
+        if size == 0 {
+            return Err(MemoryError::InvalidAddress);
+        }
+        
+        let ptr = unsafe { libc::malloc(size) };
+        if ptr.is_null() {
+            return Err(MemoryError::AllocationFailed);
+        }
+        
+        Ok(ptr as *mut u8)
+    }
+
+    pub fn deallocate(&mut self, ptr: *mut u8) {
+        // Placeholder implementation
+        if ptr.is_null() {
+            return;
+        }
+        
+        unsafe { libc::free(ptr as *mut libc::c_void) };
     }
 
     /// Free previously allocated memory
     pub fn free(&mut self, ptr: *mut u8) {
         // Placeholder implementation
+        if ptr.is_null() {
+            return;
+        }
+        
+        unsafe { libc::free(ptr as *mut libc::c_void) };
     }
 
     /// Map physical memory to virtual address space
     pub fn map_physical(&mut self, phys_addr: usize, size: usize) -> Result<*mut u8, MemoryError> {
         // Placeholder implementation
-        Err(MemoryError::OutOfMemory)
+        if size == 0 {
+            return Err(MemoryError::InvalidRange);
+        }
+        let virt_addr = unsafe { libc::mmap(0 as *mut libc::c_void, size, libc::PROT_READ | libc::PROT_WRITE, libc::MAP_PRIVATE | libc::MAP_ANONYMOUS, -1, 0) };
+        if virt_addr == libc::MAP_FAILED {
+            return Err(MemoryError::InvalidMapping);
+        }
+        Ok(virt_addr as *mut u8)
     }
 
     /// Get current memory statistics
