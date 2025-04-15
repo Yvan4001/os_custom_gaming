@@ -52,6 +52,11 @@ pub struct System {
     network_enabled: bool,
 }
 
+// Safety: We're manually asserting that System can be shared between threads
+// This is safe because we're using Mutex for all mutable access and ensuring proper synchronization
+unsafe impl Send for System {}
+unsafe impl Sync for System {}
+
 /// System event types
 #[derive(Debug, Clone)]
 pub enum SystemEvent {
@@ -608,6 +613,7 @@ impl Application for MockApplication {
 
 // Global system instance
 lazy_static! {
+    /// Global system instance
     static ref SYSTEM: Mutex<System> = Mutex::new(System::new());
 }
 
