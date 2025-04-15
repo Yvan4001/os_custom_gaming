@@ -1177,6 +1177,36 @@ fn stop_sb16_playback(driver: &SoundDriver) {
     log::trace!("SB16 playback stopped");
 }
 
+pub fn beep(
+    frequency: u16,
+    duration_ms: u32,
+) -> Result<(), &'static str> {
+    let mut driver = SOUND_DRIVER.lock();
+    driver.beep(frequency, duration_ms)
+}
+
+pub fn get_volume() -> u8 {
+    let driver = SOUND_DRIVER.lock();
+    driver.get_volume()
+}
+pub fn set_volume(volume: u8) {
+    let mut driver = SOUND_DRIVER.lock();
+    driver.set_volume(volume);
+}
+
+pub fn is_enabled() -> bool {
+    let driver = SOUND_DRIVER.lock();
+    driver.initialized.load(Ordering::SeqCst)
+}
+
+pub fn set_enabled(enabled: bool) {
+    let mut driver = SOUND_DRIVER.lock();
+    if enabled {
+        driver.initialize().unwrap_or_default();
+    } else {
+        driver.shutdown();
+    }
+}
 pub fn shutdown() {
     let mut driver = SOUND_DRIVER.lock();
     driver.stop_playback().unwrap_or_default();

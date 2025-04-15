@@ -1,5 +1,3 @@
-pub mod app;
-
 use crate::Config;
 
 pub fn run_app(config: Config) {

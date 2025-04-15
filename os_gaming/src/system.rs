@@ -177,18 +177,11 @@ impl System {
         
         // 2. Initialize interrupt handling
         log::info!("Initializing interrupt handling...");
-        interrupts::init().map_err(|e| {
-            log::error!("Interrupt initialization failed: {}", e);
-            "Interrupt initialization failed"
-        })?;
+        interrupts::init();
         
         // 3. Initialize drivers
         log::info!("Initializing device drivers...");
-        drivers::init().map_err(|e| {
-            log::error!("Driver initialization failed: {}", e);
-            "Driver initialization failed"
-        })?;
-        
+        drivers::init();
         // 4. Initialize filesystem
         log::info!("Initializing filesystem...");
         FilesystemManager::init();
@@ -633,4 +626,18 @@ pub fn init() -> Result<(), &'static str> {
 pub fn run() -> ! {
     let mut system = SYSTEM.lock();
     system.run()
+}
+
+pub fn get_system_info() -> SystemConfig {
+    SYSTEM.lock().config.lock().clone()
+}
+
+pub fn apply_profile(profile: SystemConfig) {
+    let mut system = SYSTEM.lock();
+    system.config.lock().apply_profile(profile);
+}
+
+pub fn optimize_performance() {
+    let mut system = SYSTEM.lock();
+    system.config.lock().optimize_performance();
 }
