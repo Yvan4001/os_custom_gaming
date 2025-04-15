@@ -138,6 +138,10 @@ impl SoundDriver {
         Ok(())
     }
 
+    pub fn shutdown(&mut self) {
+        self.initialized.store(false, Ordering::SeqCst);
+    }
+
     /// Detect Sound Blaster hardware
     fn detect_sound_blaster(&mut self) -> Result<(), &'static str> {
         // Try to detect Sound Blaster at common I/O ports
