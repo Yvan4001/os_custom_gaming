@@ -448,11 +448,19 @@ impl Renderer {
             // Fall through to software implementation if hardware failed
         }
         
-        // Get texture details
-        let textures = self.textures.lock();
-        let texture = textures.iter()
-            .find(|t| t.id == texture_id)
-            .ok_or(RendererError::InvalidParameters)?;
+        // Extract the texture information in a separate scope
+        let texture_info = {
+            let textures = self.textures.lock();
+            let texture = textures.iter()
+                .find(|t| t.id == texture_id)
+                .ok_or(RendererError::InvalidParameters)?;
+            
+            // Clone the texture info we need
+            (texture.width, texture.height, texture.format)
+        };
+        
+        // Unpack texture info
+        let (texture_width, texture_height, texture_format) = texture_info;
         
         // Get texture data from GPU memory
         let data = match gpu::get_texture_data(texture_id) {
@@ -461,13 +469,13 @@ impl Renderer {
         };
         
         // Calculate scaling factors
-        let scale_x = dst_rect.width as f32 / texture.width as f32;
-        let scale_y = dst_rect.height as f32 / texture.height as f32;
+        let scale_x = dst_rect.width as f32 / texture_width as f32;
+        let scale_y = dst_rect.height as f32 / texture_height as f32;
         
         // Draw the texture using software rendering
         for y in 0..dst_rect.height {
             let src_y = (y as f32 / scale_y) as u32;
-            if src_y >= texture.height {
+            if src_y >= texture_height {
                 continue;
             }
             
@@ -478,7 +486,7 @@ impl Renderer {
             
             for x in 0..dst_rect.width {
                 let src_x = (x as f32 / scale_x) as u32;
-                if src_x >= texture.width {
+                if src_x >= texture_width {
                     continue;
                 }
                 
@@ -495,15 +503,15 @@ impl Renderer {
                 }
                 
                 // Get source pixel
-                let pixel_index = (src_y * texture.width + src_x) as usize;
-                let src_pixel = match texture.format {
+                let pixel_index = (src_y * texture_width + src_x) as usize;
+                let src_pixel = match texture_format {
                     TextureFormat::RGBA8 | TextureFormat::BGRA8 => {
                         let offset = pixel_index * 4;
                         if offset + 3 >= data.len() {
                             continue;
                         }
                         
-                        if texture.format == TextureFormat::RGBA8 {
+                        if texture_format == TextureFormat::RGBA8 {
                             Color::new(data[offset], data[offset + 1], data[offset + 2], data[offset + 3])
                         } else {
                             Color::new(data[offset + 2], data[offset + 1], data[offset], data[offset + 3])

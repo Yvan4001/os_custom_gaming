@@ -25,6 +25,7 @@ pub enum SystemState {
     Error,
 }
 
+
 /// System configuration
 pub struct System {
     /// Current system state

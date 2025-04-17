@@ -22,6 +22,18 @@ pub enum FilesystemType {
     RamFs, // RAM-based filesystem
 }
 
+pub enum FileOpenMode {
+    Read,
+    Write,
+    Append,
+}
+pub enum FileSeekMode {
+    Start,
+    Current,
+    End,
+}
+
+
 /// File types
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FileType {
@@ -1152,6 +1164,31 @@ impl FilesystemManager {
         // For now, we just use the first mounted filesystem
         if let Some(fs) = self.filesystems.iter().find(|fs| fs.is_mounted()) {
             return fs.open_file(path, readonly);
+        }
+
+        Err("No mounted filesystem found")
+    }
+
+    pub fn read_to_string(path: &str) -> Result<String, &'static str> {
+        // Find the appropriate filesystem
+        // For now, we just use the first mounted filesystem
+        let fs_manager = FS_MANAGER.lock();
+        
+        if let Some(fs) = fs_manager.filesystems.iter().find(|fs| fs.is_mounted()) {
+            let mut file = fs.open_file(path, true)?;
+            
+            // Create a buffer to read the file content
+            let size = file.get_size() as usize;
+            let mut buffer = vec![0u8; size];
+            
+            // Read the file content
+            let bytes_read = file.read(&mut buffer, &fs_manager)?;
+            
+            // Convert buffer to string
+            let content = String::from_utf8(buffer[..bytes_read].to_vec())
+                .map_err(|_| "Invalid UTF-8 in file content")?;
+                
+            return Ok(content);
         }
 
         Err("No mounted filesystem found")

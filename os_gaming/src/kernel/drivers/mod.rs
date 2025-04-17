@@ -12,6 +12,7 @@ pub mod filesystem;
 pub mod timer;
 pub mod power;
 pub mod displayport;
+pub mod gpu;
 
 use gamepad::GamepadManager;
 use keyboard::KeyboardState;

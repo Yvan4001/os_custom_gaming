@@ -7,6 +7,7 @@
 pub mod gui;
 pub mod kernel;
 mod system;
+mod config;
 
 // System constants
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

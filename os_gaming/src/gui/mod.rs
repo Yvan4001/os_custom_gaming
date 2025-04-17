@@ -6,6 +6,7 @@ mod renderer;
 mod window_manager;
 mod theme;
 mod input;
+mod font;
 
 // These will be implemented later
 mod widgets;
