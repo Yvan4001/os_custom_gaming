@@ -52,6 +52,7 @@ pub struct DisplayMode {
 
 /// GPU feature flags
 #[allow(dead_code)]
+#[repr(u64)]  // Specify u64 representation to ensure values fit on all targets
 pub enum Feature {
     /// Hardware blending support
     Blending = 0x01,

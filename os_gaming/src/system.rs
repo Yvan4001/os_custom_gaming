@@ -15,7 +15,7 @@ use spin::Mutex;
 use crate::config::{load_system_config, SystemConfig};
 use crate::gui::{self, FontManager, Renderer, Theme, WindowLayoutConfig, WindowManager};
 use crate::kernel::drivers::filesystem as fs;
-use crate::kernel::drivers::filesystem::{Filesystem, FilesystemManager};
+use crate::kernel::drivers::filesystem::{FilesystemManager};
 use crate::kernel::{self, drivers, interrupts, memory};
 use bincode::{Decode, Encode};
 
