@@ -269,12 +269,12 @@ impl GcnDevice {
     
     /// Read from a GPU register
     fn read_reg32(&self, offset: usize) -> u32 {
-        common::read_reg32(self.mmio_base, offset)
+        common::read_register(self.mmio_base, offset)
     }
     
     /// Write to a GPU register
     fn write_reg32(&self, offset: usize, value: u32) {
-        common::write_reg32(self.mmio_base, offset, value)
+        common::write_register(self.mmio_base, offset, value);
     }
     
     /// Software implementation of rectangle fill

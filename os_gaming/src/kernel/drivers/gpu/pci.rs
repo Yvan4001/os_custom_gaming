@@ -295,7 +295,7 @@ pub fn enumerate_gpus() -> Result<Vec<PciDevice>, &'static str> {
     let mut devices = Vec::new();
     
     // Scan all PCI buses (0-255)
-    for bus in 0..256 {
+    for bus in 0..255 {
         // Scan all devices on this bus (0-31)
         for device in 0..32 {
             // Scan all functions of this device (0-7)

@@ -7,6 +7,7 @@ extern crate alloc;
 use alloc::{vec, vec::Vec};
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
+use serde::{Serialize, Deserialize};
 
 use crate::kernel::drivers::gpu;
 use crate::kernel::memory;
@@ -61,7 +62,7 @@ impl Color {
 }
 
 /// Represents a rectangular area
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,

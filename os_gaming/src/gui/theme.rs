@@ -147,4 +147,12 @@ impl Theme {
         theme.selection_background = accent_color;
         theme
     }
+
+    pub fn load(theme_name: &str) -> Self {
+        match theme_name {
+            "light" => Self::light(),
+            "gaming" => Self::gaming(Color::rgb(0, 120, 215)),
+            _ => Self::default(),
+        }
+    }
 }

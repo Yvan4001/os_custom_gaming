@@ -47,7 +47,7 @@ pub struct DisplayMode {
     /// Bits per pixel
     pub bpp: u8,
     /// Refresh rate (Hz)
-    pub refresh_rate: u8,
+    pub refresh_rate: u16,
 }
 
 /// GPU feature flags
@@ -93,6 +93,14 @@ pub enum Feature {
     TextureFiltering = 0x1000000,
     TextureArray = 0x2000000,
     TextureAtlas = 0x4000000,
+
+    ComputeShaders = 0x8000000,
+    GeometryShaders = 0x10000000,
+    TessellationShaders = 0x20000000,
+    ComputeUnits = 0x40000000,
+    RayTracingCores = 0x80000000,
+    TensorCores = 0x100000000,
+    VideoCodecs = 0x200000000,
 }
 
 /// GPU texture formats
@@ -139,7 +147,14 @@ pub enum GpuError {
     NotInitialized,
     UnsupportedFormat,
     UnsupportedDevice,
-    HardwareError
+    HardwareError,
+    ShutdownFailed,
+    TextureCreationFailed,
+    SetModeFailed,
+    DrawingFailed,
+    CommunicationError,
+    DisplayModeFailed,
+    OperationFailed
 }
 
 // Global GPU device instance

@@ -3,6 +3,8 @@ use crate::kernel::drivers::storage::{StorageDevice, StorageManager};
 use alloc::collections::BTreeMap;
 use alloc::string::String;
 use alloc::vec::Vec;
+use core::cell::UnsafeCell;
+use core::ptr;
 use core::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -32,7 +34,6 @@ pub enum FileSeekMode {
     Current,
     End,
 }
-
 
 /// File types
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -846,6 +847,7 @@ impl FileHandle {
         &mut self,
         buffer: &mut [u8],
         fs_manager: &FilesystemManager,
+        position: u64,
     ) -> Result<usize, &'static str> {
         if let Some(fs) = fs_manager.get_filesystem(&self.fs_name) {
             match fs.fs_type {
@@ -854,13 +856,16 @@ impl FileHandle {
                         if let Some(ram_fs) = fs.ram_fs.as_ref() {
                             // We need to cheat a bit here since we need a mutable reference
                             // to the RAM filesystem to update access times
-                            let ram_fs_ptr = ram_fs as *const RamFilesystem as *mut RamFilesystem;
-                            let ram_fs_mut = unsafe { &mut *ram_fs_ptr };
+                            let ram_fs_cell = UnsafeCell::new(self);
+                            let ram_fs_ptr =
+                                ram_fs_cell.get() as *const RamFilesystem as *mut RamFilesystem;
 
-                            let bytes_read =
-                                ram_fs_mut.read_file(inode_id, buffer, self.position)?;
-                            self.position += bytes_read as u64;
-                            return Ok(bytes_read);
+                            unsafe {
+                                let ram_fs_mut = &mut *ram_fs_ptr;
+                                let bytes_written =
+                                    ram_fs_mut.write_file(inode_id, buffer, position)?;
+                                return Ok(bytes_written);
+                            }
                         }
                     }
                     Err("Invalid file handle")
@@ -873,7 +878,7 @@ impl FileHandle {
                     }
 
                     for i in 0..to_read {
-                        buffer[i] = ((self.position as u8) + (i as u8)) % 256;
+                        buffer[i] = ((self.position as u8) + (i as u8)) % 255;
                     }
 
                     self.position += to_read as u64;
@@ -893,30 +898,33 @@ impl FileHandle {
         if self.readonly {
             return Err("File is readonly");
         }
-
+    
         if let Some(fs) = fs_manager.get_filesystem(&self.fs_name) {
             if fs.readonly {
                 return Err("Filesystem is readonly");
             }
-
+    
             match fs.fs_type {
                 FilesystemType::RamFs => {
                     if let Some(inode_id) = self.inode_id {
                         if let Some(ram_fs) = fs.ram_fs.as_ref() {
                             // We need to cheat a bit here since we need a mutable reference
-                            let ram_fs_ptr = ram_fs as *const RamFilesystem as *mut RamFilesystem;
-                            let ram_fs_mut = unsafe { &mut *ram_fs_ptr };
-
-                            let bytes_written =
-                                ram_fs_mut.write_file(inode_id, buffer, self.position)?;
-                            self.position += bytes_written as u64;
-
-                            // Update file size
-                            if self.position > self.size {
-                                self.size = self.position;
+                            // to the RAM filesystem to update metadata
+                            let ram_fs_cell = UnsafeCell::new(ram_fs);
+                            let ram_fs_ptr = ram_fs_cell.get() as *const RamFilesystem as *mut RamFilesystem;
+    
+                            unsafe {
+                                let ram_fs_mut = &mut *ram_fs_ptr;
+                                let bytes_written = ram_fs_mut.write_file(inode_id, buffer, self.position)?;
+                                self.position += bytes_written as u64;
+    
+                                // Update file size
+                                if self.position > self.size {
+                                    self.size = self.position;
+                                }
+    
+                                return Ok(bytes_written);
                             }
-
-                            return Ok(bytes_written);
                         }
                     }
                     Err("Invalid file handle")
@@ -928,7 +936,7 @@ impl FileHandle {
                     if self.position > self.size {
                         self.size = self.position;
                     }
-
+    
                     Ok(to_write)
                 }
             }
@@ -967,17 +975,14 @@ impl FileHandle {
                         if let Some(inode_id) = self.inode_id {
                             if let Some(ram_fs) = fs.ram_fs.as_ref() {
                                 // We need a mutable reference to update metadata
+                                let ram_fs_cell = UnsafeCell::new(ram_fs);
                                 let ram_fs_ptr =
-                                    ram_fs as *const RamFilesystem as *mut RamFilesystem;
-                                let ram_fs_mut = unsafe { &mut *ram_fs_ptr };
+                                    ram_fs_cell.get() as *const RamFilesystem as *mut RamFilesystem;
 
-                                // Get the file inode and update its modification time
-                                if let Some(file) = ram_fs_mut.get_inode_mut(inode_id) {
-                                    file.modification_time = get_current_time();
-
-                                    // If there's any buffered data that needs to be written, this
-                                    // would be the place to do it, but our implementation writes
-                                    // directly to the in-memory data structures
+                                unsafe {
+                                    let ram_fs_mut = &mut *ram_fs_ptr;
+                                    // Update the modification time or any other metadata
+                                    ram_fs_mut.get_inode_mut(inode_id);
                                 }
                             }
                         }
@@ -1173,21 +1178,21 @@ impl FilesystemManager {
         // Find the appropriate filesystem
         // For now, we just use the first mounted filesystem
         let fs_manager = FS_MANAGER.lock();
-        
+
         if let Some(fs) = fs_manager.filesystems.iter().find(|fs| fs.is_mounted()) {
             let mut file = fs.open_file(path, true)?;
-            
+
             // Create a buffer to read the file content
             let size = file.get_size() as usize;
             let mut buffer = vec![0u8; size];
-            
+
             // Read the file content
-            let bytes_read = file.read(&mut buffer, &fs_manager)?;
-            
+            let bytes_read = file.read(&mut buffer, &fs_manager, 0)?;
+
             // Convert buffer to string
             let content = String::from_utf8(buffer[..bytes_read].to_vec())
                 .map_err(|_| "Invalid UTF-8 in file content")?;
-                
+
             return Ok(content);
         }
 
@@ -1216,11 +1221,47 @@ impl FilesystemManager {
 }
 
 const DIRECTORY_LIST: [&str; 41] = [
-    "/bin", "/etc", "/home", "/tmp", "/var", "/boot", "/lib", "/lib64", "/opt", "/srv", "/mnt",
-    "/media", "/dev", "/proc", "/sys", "/run", "/usr", "/root", "/sysroot", "/tmpfs", "/sysfs", "/devfs", "/procfs", "/netfs",
-    "/cgroup", "/debugfs", "/devpts", "/hugetlbfs", "/mqueue", "/pstore", "/tracefs", "/configfs",
-    "/securityfs", "/fusectl", "/selinuxfs", "/sys/kernel/debug", "/sys/kernel/security",
-    "/sys/kernel/tracing", "/sys/kernel/cgroup", "/sys/kernel/hugepages", "/sys/kernel/mqueue",
+    "/bin",
+    "/etc",
+    "/home",
+    "/tmp",
+    "/var",
+    "/boot",
+    "/lib",
+    "/lib64",
+    "/opt",
+    "/srv",
+    "/mnt",
+    "/media",
+    "/dev",
+    "/proc",
+    "/sys",
+    "/run",
+    "/usr",
+    "/root",
+    "/sysroot",
+    "/tmpfs",
+    "/sysfs",
+    "/devfs",
+    "/procfs",
+    "/netfs",
+    "/cgroup",
+    "/debugfs",
+    "/devpts",
+    "/hugetlbfs",
+    "/mqueue",
+    "/pstore",
+    "/tracefs",
+    "/configfs",
+    "/securityfs",
+    "/fusectl",
+    "/selinuxfs",
+    "/sys/kernel/debug",
+    "/sys/kernel/security",
+    "/sys/kernel/tracing",
+    "/sys/kernel/cgroup",
+    "/sys/kernel/hugepages",
+    "/sys/kernel/mqueue",
 ];
 
 /// Initialize the filesystem subsystem

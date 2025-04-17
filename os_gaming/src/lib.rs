@@ -6,8 +6,8 @@
 #[cfg(feature = "std")]
 pub mod gui;
 pub mod kernel;
-mod system;
-mod config;
+pub mod system;
+pub mod config;
 
 // System constants
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -19,6 +19,12 @@ pub struct Config {
     pub display_mode: DisplayMode,
     pub performance_profile: PerformanceProfile,
     pub fullscreen: bool,
+    pub height: u32,
+    pub width: u32,
+    pub refresh_rate: u32,
+    pub theme: String,
+    pub language: String,
+    pub exit_on_escape: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -42,6 +48,12 @@ impl Default for Config {
             display_mode: DisplayMode::Windowed,
             performance_profile: PerformanceProfile::Balanced,
             fullscreen: false,
+            height: 1080,
+            width: 1920,
+            refresh_rate: 60,
+            theme: "default".to_string(),
+            language: "en".to_string(),
+            exit_on_escape: true,
         }
     }
 }

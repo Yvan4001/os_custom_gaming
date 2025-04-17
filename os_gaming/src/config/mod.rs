@@ -8,7 +8,7 @@ use alloc::string::String;
 use alloc::vec::Vec;
 use alloc::format;
 use core::fmt;
-use serde::{Serialize, Deserialize};
+use serde::{Deserialize, Serialize};
 use spin::Mutex;
 use lazy_static::lazy_static;
 use crate::kernel::drivers::filesystem::{self, FileOpenMode};
@@ -624,6 +624,28 @@ impl Default for WindowLayoutConfig {
     }
 }
 
+impl WindowLayoutConfig {
+    pub fn from_gui_layout() -> Self {
+        Self {
+            windows: Vec::new(),
+            default_theme: "default".into(),
+            remember_positions: true,
+            use_animations: true,
+            border_thickness: 1,
+            corner_radius: 3,
+            allow_transparency: true,
+            default_opacity: 255,
+        }
+    }
+
+    pub fn from_bytes(bytes: &[u8]) -> Result<Self, &'static str> {
+        // Deserialize bytes into WindowLayoutConfig
+        let config: WindowLayoutConfig = serde_json::from_slice(bytes)
+            .map_err(|_| "Failed to deserialize WindowLayoutConfig")?;
+        Ok(config)
+    }
+}
+
 impl Default for UserSettings {
     fn default() -> Self {
         Self {
@@ -823,7 +845,7 @@ pub fn load_system_config() -> Result<SystemConfig, ConfigError> {
             
             // Read the file in chunks until we've got it all
             loop {
-                match file.read(&mut buffer[total_read..], &fs_manager) {
+                match file.read(&mut buffer[total_read..], &fs_manager, 4096) {
                     Ok(bytes_read) => {
                         if bytes_read == 0 {
                             // End of file

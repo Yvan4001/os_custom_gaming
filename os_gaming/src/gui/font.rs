@@ -6,6 +6,7 @@ use eframe::egui::{self, FontDefinitions, FontFamily, TextStyle};
 pub struct FontManager {
     fonts: HashMap<String, usize>,
     font_definitions: FontDefinitions,
+    sizes: HashMap<String, f32>,
 }
 
 impl FontManager {
@@ -13,6 +14,7 @@ impl FontManager {
         Self {
             fonts: HashMap::new(),
             font_definitions: FontDefinitions::default(),
+            sizes: HashMap::new(),
         }
     }
 
@@ -76,6 +78,21 @@ impl FontManager {
             FontFamily::Monospace,
             vec!["Roboto-Mono".to_string()]
         );
+        
+        Ok(())
+    }
+
+    pub fn set_size_for_element(&mut self, element: &str, size: f32) {
+        self.sizes.insert(element.to_string(), size);
+    }
+
+    pub fn load_font_from_memory(&mut self, name: &str, data: &[u8]) -> Result<(), String> {
+        let font_index = self.font_definitions.font_data.len();
+        self.font_definitions.font_data.insert(
+            name.to_string(),
+            Arc::new(egui::FontData::from_owned(data.to_vec())),
+        );
+        self.fonts.insert(name.to_string(), font_index);
         
         Ok(())
     }

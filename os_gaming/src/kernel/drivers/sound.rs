@@ -517,7 +517,7 @@ impl SoundDriver {
         }
 
         // Set up the PIT to generate a square wave at the specified frequency
-        let divisor: u16 = 1193180 / frequency;
+        let divisor: u16 = 65535 / frequency;
 
         // Safety: Direct port I/O requires unsafe
         unsafe {

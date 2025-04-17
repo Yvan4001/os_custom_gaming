@@ -3,8 +3,10 @@
 //! This module handles window creation, movement, focus, and rendering.
 
 extern crate alloc;
-use crate::kernel::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use alloc::{string::String, vec::Vec};
+use bincode::{Decode, Encode};
+use egui::Event;
 use spin::Mutex;
 
 use super::renderer::{Color, Rect, Renderer, RendererError};
@@ -14,7 +16,6 @@ use super::theme::Theme;
 pub type WindowId = u32;
 
 /// Window properties
-#[derive(Clone)]
 pub struct Window {
     id: WindowId,
     title: String,
@@ -80,6 +81,24 @@ pub struct WindowManager {
     drag_offset_y: i32,
     theme: Theme,
     exit_requested: AtomicBool,
+}
+
+impl Clone for Window {
+    fn clone(&self) -> Self {
+        Self {
+            id: self.id,
+            title: self.title.clone(),
+            rect: self.rect,
+            rect_mutex: self.rect_mutex,
+            visible: AtomicBool::new(self.visible.load(Ordering::Relaxed)),
+            focused: AtomicBool::new(self.focused.load(Ordering::Relaxed)),
+            render_callback: self.render_callback,
+            event_callback: self.event_callback,
+            background_color: self.background_color,
+            border_color: self.border_color,
+            user_data: self.user_data,
+        }
+    }
 }
 
 impl Window {
@@ -296,6 +315,15 @@ impl WindowManager {
         }
     }
 
+    pub fn has_window(&self, id: WindowId) -> bool {
+        let windows = self.windows.lock();
+        windows.iter().any(|w| w.id() == id)
+    }
+
+    pub fn set_theme(&mut self, theme: Theme) {
+        self.theme = theme;
+    }
+
     /// Update window manager state
     pub fn update(&mut self) {
         // Process system events would go here
@@ -427,35 +455,21 @@ impl WindowManager {
         let buttons = if pressure > 0 { 1 } else { 0 };
         self.handle_mouse_event(x, y, buttons, 0);
     }
-
-    /// Save window layout for persistence
-    pub fn save_layout(&self) -> Vec<u8> {
-        // In a real implementation, this would serialize window positions
-        // For now, just return an empty vector
-        Vec::new()
-    }
-
-    /// Set exit flag
-    pub fn request_exit(&self) {
-        self.exit_requested.store(true, Ordering::Relaxed);
-    }
-
-    /// Check if exit has been requested
-    pub fn should_exit(&self) -> bool {
-        self.exit_requested.load(Ordering::Relaxed)
-    }
-
     /// Render all windows
     pub fn render(&mut self) -> Result<(), RendererError> {
-        // Collect windows into a local Vec to avoid borrowing conflict
+        // Collect window references into a local Vec to avoid borrowing conflict
         let windows_to_render = {
             let windows = self.windows.lock();
-            windows.clone()
+            windows
+                .iter()
+                .filter(|w| w.is_visible())
+                .cloned()
+                .collect::<Vec<_>>()
         };
         
         // Now render each window
-        for window in &windows_to_render {
-            self.render_window(window)?;
+        for window in windows_to_render {
+            self.render_window(&window)?;
         }
         Ok(())
     }
@@ -516,5 +530,70 @@ impl WindowManager {
     pub fn get_window(&self, id: WindowId) -> Option<Window> {
         let windows = self.windows.lock();
         windows.iter().find(|w| w.id() == id).cloned()
+    }
+
+    /// Save a simplified representation of window layout for serialization
+    pub fn save_layout(&self) -> Vec<(WindowId, String, Rect)> {
+        let windows = self.windows.lock();
+        windows.iter()
+            .map(|window| (window.id, window.title.clone(), window.rect))
+            .collect()
+    }
+
+    pub fn handle_key_press(&mut self, key: u16) {
+        // Handle key press events
+        if key == 27 { // Escape key
+            self.exit_requested.store(true, Ordering::Relaxed);
+        }
+    }
+    pub fn handle_key_release(&mut self, key: u16) {
+        // Handle key release events
+        if key == 27 { // Escape key
+            self.exit_requested.store(false, Ordering::Relaxed);
+        }
+    }
+
+    pub fn handle_mouse_move(&mut self, x: i32, y: i32) {
+        // Handle mouse move events
+        self.handle_mouse_event(x, y, 0, 0);
+    }
+    pub fn handle_mouse_press(&mut self, button: u8, x: i32, y: i32) {
+        // Handle mouse press events
+        self.handle_mouse_event(x, y, button as u8, 0);
+    }
+    pub fn handle_mouse_release(&mut self, button: u8, x: i32, y: i32) {
+        // Handle mouse release events
+        self.handle_mouse_event(x, y, 0, 0);
+    }
+
+    pub fn handle_event(&mut self, event: Event) {
+        // Handle window events
+        self.handle_event(event);
+    }
+
+    pub fn handle_mouse_scroll(&mut self, delta: i32, x: i32, y: i32) {
+        // Handle mouse scroll events
+        self.handle_mouse_event(x, y, 0, delta as i8);
+    }
+    pub fn exit_requested(&self) -> bool {
+        self.exit_requested.load(Ordering::Relaxed)
+    }
+    pub fn handle_window_resize(&mut self, width: u32, height: u32) {
+        // Handle window resize events
+        self.handle_window_resize(width, height);
+    }
+
+    pub fn handle_window_focus(&mut self) {
+        // Handle window focus events
+        self.handle_window_focus();
+    }
+    pub fn handle_window_blur(&mut self) {
+        // Handle window blur events
+        self.handle_window_blur();
+    }
+
+    pub fn shutdown(&mut self) {
+        // Handle shutdown events
+        self.close_all_windows();
     }
 }

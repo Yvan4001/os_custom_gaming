@@ -16,7 +16,7 @@ fn main() {
             {
                 println!("OS Gaming initialized successfully!");
                 // Launch GUI application
-                os_gaming::gui::run_app(config);
+                os_gaming::gui::init_gui(config);
             }
         }
         Err(e) => {
