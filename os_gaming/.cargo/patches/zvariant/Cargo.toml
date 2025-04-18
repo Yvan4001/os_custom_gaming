@@ -1,0 +1,13 @@
+[package]
+name = "zvariant"
+version = "3.12.0"
+edition = "2021"
+description = "A Rust implementation of D-Bus and GVariant data types"
+license = "MIT"
+
+[dependencies]
+serde = { version = "1.0", default-features = false, features = ["derive"] }
+
+[lib]
+name = "zvariant"
+path = "src/lib.rs" 

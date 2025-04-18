@@ -1,0 +1,13 @@
+[package]
+name = "pic8259"
+version = "0.11.0"
+edition = "2021"
+description = "A crate for interacting with the 8259 PIC"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "pic8259"
+path = "src/lib.rs"
+
+[dependencies]
+x86_64 = { version = "0.14.2", default-features = false } 

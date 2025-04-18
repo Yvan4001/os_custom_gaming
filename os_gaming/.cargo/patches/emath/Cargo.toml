@@ -1,0 +1,13 @@
+[package]
+name = "emath"
+version = "0.24.0"
+edition = "2021"
+description = "A simple 2D math library for embedded systems"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "emath"
+path = "src/lib.rs"
+
+[features]
+default = []

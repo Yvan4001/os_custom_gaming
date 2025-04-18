@@ -1,0 +1,13 @@
+[package]
+name = "apic"
+version = "0.1.0"
+edition = "2021"
+description = "A crate for interacting with the APIC"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "apic"
+path = "src/lib.rs"
+
+[dependencies]
+x86_64 = { version = "0.14.2", default-features = false, features = ["instructions"] } 

@@ -9,8 +9,8 @@ use core::marker::Sized;
 use core::option::Option;
 use core::result::Result;
 
-mod ser;
-mod de;
+pub mod de;
+pub mod ser;
 
 pub use ser::*;
 pub use de::*;

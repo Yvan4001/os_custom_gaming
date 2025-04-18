@@ -1,0 +1,14 @@
+[package]
+name = "simd-adler32"
+version = "0.3.7"
+edition = "2021"
+description = "SIMD-accelerated Adler-32 hash algorithm implementation"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "simd_adler32"
+path = "src/lib.rs"
+
+[features]
+default = []
+std = [] 

@@ -1,0 +1,24 @@
+[package]
+name = "log"
+version = "0.4.20"
+edition = "2021"
+description = "A lightweight logging facade for no_std environments"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "log"
+path = "src/lib.rs"
+
+[features]
+default = []
+std = []
+max_level_debug = []
+max_level_error = []
+max_level_info = []
+max_level_trace = []
+max_level_warn = []
+release_max_level_debug = []
+release_max_level_error = []
+release_max_level_info = []
+release_max_level_trace = []
+release_max_level_warn = [] 

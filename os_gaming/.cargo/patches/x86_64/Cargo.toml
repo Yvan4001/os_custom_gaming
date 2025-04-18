@@ -1,0 +1,16 @@
+[package]
+name = "x86_64"
+version = "0.15.2"
+edition = "2021"
+description = "Support for x86_64 specific functionality"
+license = "MIT OR Apache-2.0"
+
+[lib]
+name = "x86_64"
+path = "src/lib.rs"
+
+[features]
+default = ["instructions"]
+abi_x86_interrupt = []
+step_trait = []
+instructions = [] 
