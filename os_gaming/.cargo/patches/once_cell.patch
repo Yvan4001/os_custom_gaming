@@ -1,0 +1,34 @@
+#![no_std]
+
+use core::option::Option::{self, Some, None};
+use core::sync::atomic::{AtomicPtr, Ordering};
+use core::ptr; 
+
+mod race;
+mod unsync;
+
+pub use race::OnceCell;
+pub use unsync::Lazy;
+
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_once_cell() {
+        let cell = OnceCell::new();
+        assert!(cell.get().is_none());
+        
+        cell.set(42).unwrap();
+        assert_eq!(cell.get(), Some(&42));
+        
+        cell.set(43).unwrap_err();
+        assert_eq!(cell.get(), Some(&42));
+    }
+
+    #[test]
+    fn test_lazy() {
+        let lazy = Lazy::new(|| 42);
+        assert_eq!(*lazy, 42);
+        assert_eq!(*lazy, 42); // Should not recompute
+    }
+} 

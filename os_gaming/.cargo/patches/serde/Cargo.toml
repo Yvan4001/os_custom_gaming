@@ -1,0 +1,36 @@
+[package]
+name = "serde"
+version = "1.0.219"
+edition = "2021"
+authors = ["Erick Tryzelaar <erick.tryzelaar@gmail.com>", "David Tolnay <dtolnay@gmail.com>"]
+description = "A serialization framework for Rust"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/serde-rs/serde"
+documentation = "https://docs.rs/serde"
+readme = "README.md"
+keywords = ["serialization", "serde", "compile-time", "codegen", "no_std"]
+categories = ["encoding", "no-std"]
+exclude = ["Cargo.toml.orig"]
+
+[lib]
+name = "serde"
+path = "src/lib.rs"
+
+[features]
+default = ["std"]
+std = []
+alloc = []
+derive = ["serde_derive"]
+derive_const = ["serde_derive"]
+unstable = []
+rc = ["alloc"]
+unstable-rustc = []
+unstable-debug = ["unstable"]
+unstable-testing = ["unstable", "std"]
+unstable-testing-debug = ["unstable", "std"]
+
+[dependencies]
+serde_derive = { version = "1.0.188", path = "../serde_derive", optional = true }
+
+[dev-dependencies]
+serde_derive = { version = "1.0.188", path = "../serde_derive" } 

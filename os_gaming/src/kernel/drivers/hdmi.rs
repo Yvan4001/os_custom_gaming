@@ -3,7 +3,8 @@ use core::slice;
 use core::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
-#[cfg(feature = "std")]
+#[cfg(not(feature = "std"))]
+use alloc::string::String;
 use sysinfo::{System};
 #[cfg(feature = "std")]
 use std::process::Command;

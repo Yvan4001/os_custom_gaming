@@ -8,6 +8,7 @@
 //! - Performance profiles for gaming
 
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::arch::asm;
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::instructions::port::Port;

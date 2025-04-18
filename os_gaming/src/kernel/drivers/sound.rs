@@ -1,6 +1,7 @@
 #[cfg(not(feature = "std"))]
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::arch::asm;
 use spin::Mutex;
 #[cfg(feature = "std")]
 use std::vec::Vec;

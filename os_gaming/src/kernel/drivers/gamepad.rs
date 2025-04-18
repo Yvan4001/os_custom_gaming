@@ -2,6 +2,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, Ordering};
+use core::arch::asm;
 use spin::Mutex;
 use lazy_static::lazy_static;
 

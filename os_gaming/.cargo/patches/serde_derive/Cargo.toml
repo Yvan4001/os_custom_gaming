@@ -1,0 +1,24 @@
+[package]
+name = "serde_derive"
+version = "1.0.188"
+edition = "2021"
+authors = ["Erick Tryzelaar <erick.tryzelaar@gmail.com>", "David Tolnay <dtolnay@gmail.com>"]
+description = "Macros 1.1 implementation of #[derive(Serialize, Deserialize)]"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/serde-rs/serde"
+documentation = "https://serde.rs/derive.html"
+keywords = ["serde", "serialization", "no_std"]
+categories = ["encoding", "no-std"]
+
+[lib]
+name = "serde_derive"
+proc-macro = true
+
+[features]
+default = []
+deserialize_in_place = []
+
+[dependencies]
+proc-macro2 = "1.0"
+quote = "1.0"
+syn = { version = "2.0", features = ["full"] }

@@ -2,35 +2,77 @@
 name = "os_gaming"
 version = "0.1.0"
 edition = "2021"
+description = "A gaming operating system kernel"
 
 [features]
 default = ["std"]
-std = ["egui", "eframe"]
+std = ["egui"]
 os_mode = []
+log = []
 
 [dependencies]
-# GUI dependencies (for std mode)
-egui = { version = "0.31.1", optional = true }
-eframe = { version = "0.31.1", optional = true }
+# Common for all builds
+log = { version = "0.4", default-features = false }
+spin = "0.10.0"
+lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 
-# Linux system integration
+# Add these if needed in no_std
+serde = { version = "1.0.219", default-features = false, features = ["derive", "alloc"]}
+serde_json = { version = "1.0.105", default-features = false, features = ["preserve_order"] }
+bincode = { version = "2.0.0-rc.3", default-features = false, features = ["alloc"] }
+x86_64 = "0.15.2"
+mmap = "0.1.1"
+pic8259 = "0.11.0"
+libc = "0.2.172"
+panic = "0.4.0"
+assert = "0.7.5"
+apic = "0.1.0"
+eframe = "0.31.1"
+raw-cpuid = "11.5.0"
+bit_field = "0.10.2"
+once_cell = { version = "1.19.0", default-features = false, features = ["alloc"] }
+
+[target.'cfg(not(target_os = "none"))'.dependencies]
+# Only for std builds
+egui = { version = "0.31.1", optional = true }
 libc = "0.2.172"
 sysinfo = "0.34.2"
 nix = "0.29.0"
 num_cpus = "1.16.0"
-
-# Only used in std mode
 directories = { version = "6.0.0", optional = true }
-log = "0.4"
 env_logger = "0.11.8"
-spin = "0.10.0"
-lazy_static = "1.5.0"
-x86_64 = "0.15.2"
-raw-cpuid = "11.5.0"
-pic8259 = "0.11.0"
-bit_field = "0.10.2"
-serde = "1.0.219"
-serde_derive = "1.0.219"
-toml = "0.8.20"
-serde_json = "1.0.140"
-bincode = "2.0.1"
+toml = { version = "0.8.20", default-features = false, features = ["parse"] }
+
+[target.'cfg(target_os = "none")'.dependencies]
+# Only for no_std builds
+panic = { version = "0.4.0", default-features = false }
+
+[patch.crates-io]
+x86_64 = { git = "https://github.com/rust-osdev/x86_64", tag = "v0.15.2" }
+apic = { git = "https://github.com/rust-osdev/apic", branch = "master" }
+serde = { path = ".cargo/patches/serde" }
+once_cell = { path = ".cargo/patches/once_cell" }
+
+[profile.dev]
+opt-level = 0
+debug = true
+split-debuginfo = "unpacked"
+debug-assertions = true
+overflow-checks = true
+lto = false
+panic = 'abort'
+incremental = true
+codegen-units = 256
+rpath = false
+
+[profile.release]
+opt-level = 3
+debug = false
+split-debuginfo = "packed"
+debug-assertions = false
+overflow-checks = false
+lto = true
+panic = 'abort'
+incremental = false
+codegen-units = 16
+rpath = false

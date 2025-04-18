@@ -3,6 +3,7 @@
 //! This module coordinates the initialization of all system components
 //! and provides the interface between kernel services and the GUI.
 extern crate alloc;
+use core::arch::asm;
 
 use std::fs::File;
 use std::io::Write;

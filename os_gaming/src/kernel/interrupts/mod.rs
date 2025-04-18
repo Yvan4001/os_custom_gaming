@@ -6,6 +6,7 @@ pub(crate) mod irq;
 use x86_64::structures::idt::InterruptDescriptorTable;
 use lazy_static::lazy_static;
 use spin::Mutex;
+use core::arch::asm;
 
 pub use self::handlers::*;
 pub use self::irq::*;

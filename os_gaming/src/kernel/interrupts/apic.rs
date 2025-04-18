@@ -6,6 +6,7 @@ use spin::Mutex;
 use x86_64::registers::control::{Cr4, Cr4Flags};
 use x86_64::registers::model_specific::{Efer, EferFlags};
 use x86_64::PhysAddr;
+use x86_64::instructions::port::Port;
 
 // APIC register offsets
 const APIC_ID: u32 = 0x20;

@@ -5,6 +5,7 @@ use std::process;
 
 use os_gaming::{self, Config};
 use os_gaming::system::init;
+use core::arch::asm;
 
 fn main() {
     #[cfg(feature = "std")]
