@@ -6,15 +6,19 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use lazy_static::lazy_static;
 use x86_64::{VirtAddr, PhysAddr};
-use x86_64::structures::paging::{
+pub(crate) use x86_64::structures::paging::{
     PageTable, PageTableFlags, PhysFrame, Size4KiB, Size2MiB, Size1GiB, 
     Mapper, OffsetPageTable, Page, FrameAllocator, MappedPageTable,
     page_table::FrameError
 };
-
+use alloc::vec::Vec;
 use super::physical::{self, PAGE_SIZE};
 use crate::kernel::memory::memory_manager::MemoryError;
-use crate::kernel::memory::memory_manager::{MemoryProtection, MemoryType};
+use crate::kernel::memory::memory_manager::{MemoryProtection, MemoryType, CacheType};
+use crate::kernel::memory::memory_manager::current_page_table;
+use crate::kernel::memory::allocator::KernelHeapAllocator;
+
+const DEFAULT_HEAP_SIZE: usize = 1024 * 1024 * 4; // 4MB
 
 /// Virtual memory manager
 pub struct VirtualMemoryManager {
@@ -97,21 +101,18 @@ impl VirtualMemoryManager {
             }
             
             // Set cache type
-            match protection.cache {
-                super::CacheType::Uncacheable => {
+            match protection.cache_type {
+                CacheType::Uncacheable => {
                     flags |= PageTableFlags::NO_CACHE;
                 }
-                super::CacheType::WriteCombining => {
-                    flags |= PageTableFlags::WRITE_THROUGH;
-                }
-                super::CacheType::WriteThrough => {
+                CacheType::WriteThrough => {
                     flags |= PageTableFlags::WRITE_THROUGH;
                 }
                 _ => {} // Default caching
             }
             
             // Map the pages
-            let page_table = super::current_page_table();
+            let page_table = current_page_table();
             
             for i in 0..pages {
                 let page_virt = VirtAddr::new(virt_addr.as_u64() + (i * PAGE_SIZE) as u64);
@@ -157,7 +158,7 @@ impl VirtualMemoryManager {
             let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
             
             // Unmap the pages
-            let page_table = super::current_page_table();
+            let page_table = current_page_table();
             
             for i in 0..pages {
                 let page_virt = VirtAddr::new(virt_addr.as_u64() + (i * PAGE_SIZE) as u64);
@@ -227,21 +228,21 @@ impl VirtualMemoryManager {
             }
             
             // Set cache type
-            match protection.cache {
-                super::CacheType::Uncacheable => {
+            match protection.cache_type {
+                CacheType::Uncacheable => {
                     flags |= PageTableFlags::NO_CACHE;
                 }
-                super::CacheType::WriteCombining => {
+                CacheType::WriteThrough => {
                     flags |= PageTableFlags::WRITE_THROUGH;
                 }
-                super::CacheType::WriteThrough => {
-                    flags |= PageTableFlags::WRITE_THROUGH;
+                CacheType::WriteBack => {
+                    flags |= PageTableFlags::WRITABLE;
                 }
                 _ => {} // Default caching
             }
             
             // Update the page table entries
-            let page_table = super::current_page_table();
+            let page_table = current_page_table();
             
             for i in 0..pages {
                 let page_virt = VirtAddr::new(virt_addr.as_u64() + (i * PAGE_SIZE) as u64);
@@ -332,11 +333,14 @@ unsafe impl FrameAllocator<Size4KiB> for FrameAllocImpl {
 
 lazy_static! {
     static ref VIRTUAL_MEMORY_MANAGER: VirtualMemoryManager = VirtualMemoryManager::new();
+    static ref KERNEL_HEAP: KernelHeapAllocator = KernelHeapAllocator::new();
 }
 
 /// Initialize virtual memory management
-pub fn init() -> Result<(), &'static str> {
-    VIRTUAL_MEMORY_MANAGER.init()
+pub fn init(size: usize) -> Result<(), &'static str> {
+    log::warn!("Using deprecated allocator::init. Consider using init_heap for the global allocator.");
+    let heap_size = if size == 0 { DEFAULT_HEAP_SIZE } else { size };
+    KERNEL_HEAP.init(heap_size)
 }
 
 /// Get a reference to the virtual memory manager
@@ -344,27 +348,33 @@ pub fn get_virtual_memory_manager() -> &'static VirtualMemoryManager {
     &VIRTUAL_MEMORY_MANAGER
 }
 
+/// Get the kernel heap allocator (Associated with KERNEL_HEAP struct - likely remove)
+pub fn get_kernel_heap() -> &'static KernelHeapAllocator {
+    log::warn!("Using deprecated allocator::get_kernel_heap.");
+   &KERNEL_HEAP
+}
+
 /// Allocate virtual memory
 pub fn allocate(size: usize, protection: MemoryProtection, mem_type: MemoryType) -> Result<VirtAddr, MemoryError> {
-    VIRTUAL_MEMORY_MANAGER.allocate_memory(size, protection, mem_type)
+    get_virtual_memory_manager().allocate_memory(size, protection, mem_type)
 }
 
 /// Free allocated memory
 pub fn free(addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
-    VIRTUAL_MEMORY_MANAGER.free_memory(addr, size)
+    get_virtual_memory_manager().free_memory(addr, size)
 }
 
 /// Map physical memory to virtual memory
 pub fn map(virt_addr: VirtAddr, phys_addr: PhysAddr, size: usize, protection: MemoryProtection, mem_type: MemoryType) -> Result<(), MemoryError> {
-    VIRTUAL_MEMORY_MANAGER.map_memory(virt_addr, phys_addr, size, protection, mem_type)
+    get_virtual_memory_manager().map_memory(virt_addr, phys_addr, size, protection, mem_type)
 }
 
 /// Unmap virtual memory
 pub fn unmap(virt_addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
-    VIRTUAL_MEMORY_MANAGER.unmap_memory(virt_addr, size)
+    get_virtual_memory_manager().unmap_memory(virt_addr, size)
 }
 
 /// Change memory protection
 pub fn protect(virt_addr: VirtAddr, size: usize, protection: MemoryProtection) -> Result<(), MemoryError> {
-    VIRTUAL_MEMORY_MANAGER.protect(virt_addr, size, protection)
+    get_virtual_memory_manager().protect(virt_addr, size, protection)
 }

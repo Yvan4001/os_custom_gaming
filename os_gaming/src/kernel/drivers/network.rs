@@ -1,6 +1,8 @@
 extern crate alloc;
 use alloc::string::String;
+use crate::alloc::string::ToString;
 use alloc::vec::Vec;
+use alloc::vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use x86_64::instructions::port::Port;
 

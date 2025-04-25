@@ -5,7 +5,7 @@
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::ptr::NonNull;
 use core::alloc::{GlobalAlloc, Layout};
-use spin::Mutex;
+use spin::{Mutex, MutexGuard};
 use lazy_static::lazy_static;
 
 #[cfg(feature = "std")]
@@ -16,11 +16,22 @@ use linked_list_allocator::LockedHeap;
 
 #[cfg(not(feature = "std"))]
 use x86_64::VirtAddr;
+use x86_64::structures::paging::{Mapper, Page, PhysFrame};
+use x86_64::structures::paging::mapper::MapToError;
+use x86_64::structures::paging::Size4KiB;
+use x86_64::structures::paging::FrameAllocator;
+use x86_64::structures::paging::PageTableFlags;
+use x86_64::structures::paging::mapper::OffsetPageTable;
+use x86_64::structures::paging::PageTable;
+use crate::kernel::memory::memory_manager::CacheType;
 
 use crate::kernel::memory::memory_manager::{MemoryProtection, MemoryType};
+use crate::kernel::memory::physical::get_physical_memory_manager;
 
 /// Default initial heap size
-const DEFAULT_HEAP_SIZE: usize = 1024 * 1024 * 4; // 4MB
+const DEFAULT_HEAP_SIZE: usize = 1024 * 1024 * 4; // 4MB // Example address for the mapper
+const PAGE_TABLE_ADDR: usize = 0x2000_0000;
+
 
 /// Heap allocator for kernel memory
 pub struct KernelHeapAllocator {
@@ -32,6 +43,18 @@ pub struct KernelHeapAllocator {
     #[cfg(feature = "std")]
     next_addr: Mutex<usize>,
 }
+
+pub struct BootFrameAllocator<'a>(pub MutexGuard<'a, KernelHeapAllocator>);
+
+unsafe impl<'a> FrameAllocator<Size4KiB> for BootFrameAllocator<'a> {
+    fn allocate_frame(&mut self) -> Option<PhysFrame> {
+        get_physical_memory_manager()
+            .allocate_frame()
+            .map(|addr| PhysFrame::containing_address(addr))
+    }
+}
+
+
 
 impl KernelHeapAllocator {
     /// Create a new kernel heap allocator
@@ -63,14 +86,14 @@ impl KernelHeapAllocator {
         #[cfg(not(feature = "std"))]
         {
             // Allocate memory for the heap
-            let heap_start = match super::virtual_mem::allocate(
+            let heap_start = match super::r#virtual::allocate( // Changed from virtual_mem
                 size,
                 MemoryProtection {
                     read: true,
                     write: true,
                     execute: false,
                     user: false,
-                    cache: super::CacheType::WriteBack,
+                    cache_type: CacheType::WriteBack,
                 },
                 MemoryType::Normal
             ) {
@@ -155,7 +178,13 @@ unsafe impl GlobalAlloc for KernelHeapAllocator {
 
 lazy_static! {
     static ref KERNEL_HEAP: KernelHeapAllocator = KernelHeapAllocator::new();
+    static ref FRAME_ALLOCATOR: Mutex<KernelHeapAllocator> = Mutex::new(KernelHeapAllocator::new());
+    static ref MAPPER: Mutex<OffsetPageTable<'static>> = unsafe {
+        let level_4_table = &mut *(PAGE_TABLE_ADDR as *mut PageTable);
+        Mutex::new(OffsetPageTable::new(level_4_table, VirtAddr::new(HEAP_START as u64)))
+    };
 }
+
 
 /// Initialize the kernel heap
 pub fn init(size: usize) -> Result<(), &'static str> {
@@ -168,5 +197,49 @@ pub fn get_kernel_heap() -> &'static KernelHeapAllocator {
     &KERNEL_HEAP
 }
 
+
 #[global_allocator]
-static ALLOCATOR: KernelHeapAllocator = KernelHeapAllocator::new();
+static ALLOCATOR: LockedHeap = LockedHeap::empty();
+
+pub const HEAP_START: usize = 0x_4444_4444_0000;
+pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
+
+/// Initializes the kernel heap. Must only be called once.
+pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
+    let page_range = {
+        let heap_start = VirtAddr::new(HEAP_START as u64);
+        let heap_end = heap_start + HEAP_SIZE.try_into().unwrap() - 1u64;
+        let heap_start_page = Page::containing_address(heap_start);
+        let heap_end_page = Page::containing_address(heap_end);
+        Page::range_inclusive(heap_start_page, heap_end_page)
+    };
+
+    let mut mapper = unsafe { MAPPER.lock() };
+    let frame_allocator = unsafe { FRAME_ALLOCATOR.lock() };
+    let mut boot_allocator = BootFrameAllocator(frame_allocator);
+
+    for page in page_range {
+        let frame_addr = match get_physical_memory_manager().allocate_frame() {
+            Some(addr) => addr,
+            None => return Err(MapToError::FrameAllocationFailed),
+        };
+
+        let frame = PhysFrame::containing_address(frame_addr);
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+        unsafe {
+            match mapper.map_to(page, frame, flags, &mut boot_allocator) {
+                Ok(flush) => flush.flush(),
+                Err(e) => {
+                    get_physical_memory_manager().free_frame(frame_addr);
+                    return Err(e);
+                }
+            }
+        }
+    }
+
+    unsafe {
+        ALLOCATOR.lock().init(HEAP_START as *mut u8, HEAP_SIZE);
+    }
+
+    Ok(())
+}

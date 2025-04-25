@@ -7,6 +7,7 @@ extern crate alloc;
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
+use alloc::vec::Vec;
 
 mod detection;
 mod vesa;

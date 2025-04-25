@@ -1,4 +1,7 @@
-use std::collections::HashMap;
+use alloc::string::{String, ToString};
+use alloc::vec;
+use alloc::vec::Vec;
+use hashbrown::HashMap;
 
 /// Configuration for window layouts in the GUI.
 pub struct WindowLayoutConfig {

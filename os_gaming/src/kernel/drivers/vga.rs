@@ -31,6 +31,7 @@ pub enum Color {
     Pink = 13,
     Yellow = 14,
     White = 15,
+    Gray = 16,
 }
 
 // Color code structure - combines foreground and background colors
@@ -203,6 +204,18 @@ pub fn switch_to_text_mode() {
     clear_screen();
 }
 
+/// Set a pixel at the specified coordinates
+pub fn set_pixel(
+    x: usize,
+    y: usize,
+    color: Color,
+) {
+    // Set a pixel at the specified coordinates
+    unsafe {
+        asm!("int3");
+    }
+}
+
 //convert_to_attribute(vga::Color::White, vga::Color::Black);
 pub fn convert_to_attribute(foreground: Color, background: Color) -> u8 {
     (background as u8) << 4 | (foreground as u8)
@@ -215,4 +228,50 @@ pub fn print_at(x: usize, y: usize, text: &str, attribute: u8) -> Result<(), &'s
         asm!("int3");
     }
     Ok(())
+}
+
+pub fn new_line() {
+    // Move to the next line by calling the writer's new_line method
+    interrupts::without_interrupts(|| {
+        WRITER.lock().new_line();
+    });
+}
+
+pub fn backspace() {
+    // Handle backspace: move back one character and clear it
+    interrupts::without_interrupts(|| {
+        let mut writer = WRITER.lock();
+        
+        if writer.column_position > 0 {
+            // Move back one column
+            writer.column_position -= 1;
+            
+            // Clear the character by overwriting with a space
+            let row = VGA_BUFFER_HEIGHT - 1;
+            let col = writer.column_position;
+            
+            writer.buffer.chars[row][col] = ScreenChar {
+                ascii_character: b' ',
+                color_code: writer.color_code,
+            };
+        } else if VGA_BUFFER_HEIGHT > 1 {
+            // Optional: If at start of line, move up to end of previous line
+            // This is more complex and would require adding row tracking to Writer
+            // For simplicity, we'll just do nothing when at column 0
+        }
+    });
+}
+
+pub fn print_char(c: char) {
+    // Print a single character
+    interrupts::without_interrupts(|| {
+        // Convert char to byte and write it
+        // ASCII characters fit in u8, but char might be Unicode
+        if c.is_ascii() {
+            WRITER.lock().write_byte(c as u8);
+        } else {
+            // Print a replacement character for non-ASCII
+            WRITER.lock().write_byte(0xfe); // ■ character
+        }
+    });
 }

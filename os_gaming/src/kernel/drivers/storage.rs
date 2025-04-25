@@ -1,6 +1,8 @@
 extern crate alloc;
 use alloc::vec::Vec;
+use alloc::vec;
 use alloc::string::String;
+use crate::alloc::string::ToString;
 use core::sync::atomic::{AtomicBool, Ordering};
 
 /// Types of storage devices

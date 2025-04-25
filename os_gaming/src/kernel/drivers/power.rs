@@ -426,24 +426,39 @@ impl PowerManager {
     }
 
     /// Reboot the system
+    ///
+    /// This method attempts to reboot the computer using the PS/2 keyboard
+    /// controller reset mechanism.
+    ///
+    /// Returns Ok(()) if the reboot was initiated successfully, or an error
+    /// if the power manager wasn't properly initialized.
     pub fn reboot(&self) -> Result<(), &'static str> {
         if !self.initialized.load(Ordering::SeqCst) {
             return Err("Power manager not initialized");
         }
 
+        #[cfg(not(feature = "std"))]
+        {
+            // Le triple fault est la méthode la plus fiable
+            unsafe {
+                // Désactiver les interruptions avant tout
+                asm!("cli");
+
+                // Tentative via le contrôleur de clavier PS/2
+                let mut port = Port::new(0x64);
+                port.write(0xFEu8);
+
+                // Si on arrive ici, la méthode a échoué
+                // Utiliser HLT pour stopper le processeur
+                loop {
+                    asm!("hlt");
+                }
+            }
+        }
+
         #[cfg(feature = "std")]
         {
             log::info!("System reboot requested");
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            unsafe {
-                let mut command_port = Port::new(0x64);
-                command_port.write(0xFEu8);
-                core::arch::asm!("cli");
-                core::arch::asm!("jmp 0xFFFF:0x0000");
-            }
         }
 
         Ok(())

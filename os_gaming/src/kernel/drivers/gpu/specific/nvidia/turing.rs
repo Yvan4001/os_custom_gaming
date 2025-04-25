@@ -1,6 +1,7 @@
 use crate::kernel::drivers::gpu::common::{GpuError, GpuOperation};
 use crate::kernel::drivers::gpu::pci::PciDevice;
 use crate::kernel::drivers::gpu::GpuDevice;
+use alloc::boxed::Box;
 
 
 /// Represents a Nvidia Turing architecture GPU

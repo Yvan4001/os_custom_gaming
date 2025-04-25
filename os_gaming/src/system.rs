@@ -5,9 +5,6 @@
 extern crate alloc;
 use core::arch::asm;
 
-use std::fs::File;
-use std::io::Write;
-
 use alloc::string::String;
 use alloc::vec::Vec;
 use lazy_static::lazy_static;
@@ -19,6 +16,7 @@ use crate::kernel::drivers::filesystem as fs;
 use crate::kernel::drivers::filesystem::{FilesystemManager};
 use crate::kernel::{self, drivers, interrupts, memory};
 use bincode::{Decode, Encode};
+use alloc::boxed::Box;
 
 /// System state flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

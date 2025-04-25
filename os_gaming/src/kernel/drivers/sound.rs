@@ -2,12 +2,16 @@
 use alloc::vec::Vec;
 use core::sync::atomic::{AtomicBool, Ordering};
 use core::arch::asm;
+use core::ops;
 use spin::Mutex;
 #[cfg(feature = "std")]
 use std::vec::Vec;
 use x86_64::instructions::port::Port;
+use x86_64::structures::idt::InterruptStackFrame;
 #[macro_use]
 use lazy_static::lazy_static;
+use micromath::F32Ext;
+
 
 use crate::kernel::interrupts;
 
@@ -918,27 +922,28 @@ impl SoundDriver {
 
     /// Generate a test tone (sine wave) of the specified frequency and duration
     fn generate_test_tone(
-        &self,
-        frequency: u16,
-        duration_ms: u32,
-        sample_rate: SampleRate,
+    &self,
+    frequency: u16,
+    duration_ms: u32,
+    sample_rate: SampleRate,
     ) -> Vec<i16> {
-        let sample_rate_hz = sample_rate as u32;
-        let num_samples = (sample_rate_hz * duration_ms) / 1000;
-        let mut samples = Vec::with_capacity(num_samples as usize);
+    let sample_rate_hz = sample_rate as u32;
+    // Prevent overflow by using u64 for intermediate calculation
+    let num_samples = ((sample_rate_hz as u64 * duration_ms as u64) / 1000) as usize;
+    let mut samples = Vec::with_capacity(num_samples);
 
-        // Constants for the sine wave calculation
-        let amplitude: f32 = 0x7FFF as f32 * (self.volume as f32 / 100.0);
-        let period: f32 = sample_rate_hz as f32 / frequency as f32;
+    let amplitude: f32 = 0x7FFF as f32 * (self.volume.min(100) as f32 / 100.0);
+    let period: f32 = sample_rate_hz as f32 / frequency as f32;
 
-        for i in 0..num_samples {
-            let angle = (i as f32 / period) * 2.0 * core::f32::consts::PI;
-            let sample = (angle.sin() * amplitude) as i16;
-            samples.push(sample);
-        }
-
-        samples
+    for i in 0..num_samples {
+    let angle = ((i as f32) / period) * 2.0 * core::f32::consts::PI;
+    // Ensure we don't exceed i16 bounds
+    let sample = (angle.sin() * amplitude).clamp(-32768.0, 32767.0) as i16;
+    samples.push(sample);
     }
+    samples
+    }
+
 }
 
 pub fn init() -> Result<SoundDriver, &'static str> {
@@ -947,12 +952,6 @@ pub fn init() -> Result<SoundDriver, &'static str> {
     Ok(sound_driver)
 }
 
-// Sound interrupt handler
-#[cfg(not(feature = "std"))]
-extern "x86-interrupt" fn sound_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    // Handle sound hardware interrupt
-    // This would process completed DMA transfers and fill buffers
-}
 
 struct AudioBuffers {
     buffer_a: Vec<i16>,
@@ -1061,7 +1060,7 @@ impl AudioBuffers {
     }
 }
 
-pub fn get_sound_driver() -> impl std::ops::DerefMut<Target = SoundDriver> {
+pub fn get_sound_driver() -> impl ops::DerefMut<Target = SoundDriver> {
     SOUND_DRIVER.lock()
 }
 

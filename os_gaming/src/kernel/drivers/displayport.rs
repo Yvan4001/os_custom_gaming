@@ -7,6 +7,10 @@ use spin::Mutex;
 use std::process::Command;
 #[cfg(feature = "std")]
 use sysinfo::System;
+use alloc::string::String;
+use crate::alloc::string::ToString;
+use alloc::vec::Vec;
+
 
 use super::hdmi::{GamingRequirements, GpuInfo, GpuVendor, HdmiResolution};
 

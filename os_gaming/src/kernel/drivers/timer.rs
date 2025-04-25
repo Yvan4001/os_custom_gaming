@@ -4,6 +4,7 @@ use x86_64::registers::model_specific::Msr;
 use x86_64::structures::idt::InterruptStackFrame;
 use spin::Mutex;
 use lazy_static::lazy_static;
+use alloc::vec::Vec;
 
 // Constants
 pub const PIT_FREQUENCY: u32 = 1193182; // Base frequency of the PIT (Hz)
@@ -326,12 +327,12 @@ impl TimerManager {
 pub extern "x86-interrupt" fn timer_interrupt_handler(_stack_frame: InterruptStackFrame) {
     // Increment tick counter
     TICKS.fetch_add(1, Ordering::SeqCst);
-    
+
     // End Of Interrupt signal
     #[cfg(not(feature = "std"))]
     unsafe {
         // Send EOI to PIC
-        crate::kernel::interrupts::end_of_interrupt();
+        crate::kernel::interrupts::end_of_interrupt(32);
     }
 }
 
@@ -373,12 +374,12 @@ pub fn start_system_timer() {
         
         // Register the timer interrupt handler with the IDT
         unsafe {
-            crate::kernel::interrupts::register_timer_handler(timer_interrupt_handler);
+            crate::kernel::interrupts::register_handler(32, timer_interrupt_handler);
         }
         
         // Enable timer interrupts
         unsafe {
-            crate::kernel::interrupts::enable_timer_interrupt();
+            crate::kernel::interrupts_init();
         }
         
         #[cfg(feature = "log")]
@@ -697,7 +698,7 @@ fn poll_input_devices() {
     #[cfg(not(feature = "std"))]
     {
         // Check for new input events
-        if let Some(input) = crate::kernel::drivers::input::poll_events() {
+        if let Some(input) = crate::kernel::drivers::inputs::poll_events() {
             // Process input events
             process_input_event(input);
         }

@@ -3,9 +3,12 @@ use core::slice;
 use core::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
+use alloc::format;
+use alloc::vec;
+use alloc::vec::Vec;
 #[cfg(not(feature = "std"))]
 use alloc::string::String;
-use sysinfo::{System};
+use crate::alloc::string::ToString;
 #[cfg(feature = "std")]
 use std::process::Command;
 

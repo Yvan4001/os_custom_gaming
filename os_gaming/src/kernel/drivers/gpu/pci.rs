@@ -220,13 +220,13 @@ fn get_device_name(vendor_id: u16, device_id: u16) -> &'static str {
         (0x10DE, 0x1F02) => "NVIDIA RTX 2060",
         
         // AMD GPUs
-        (0x1002, 0x73BF) => "AMD RX 6900 XT",
-        (0x1002, 0x73BF) => "AMD RX 6800 XT",
-        (0x1002, 0x73BF) => "AMD RX 6800",
+        (0x1002, 0x729F) => "AMD RX 6900 XT",
+        (0x1002, 0x72BF) => "AMD RX 6800 XT",
+        (0x1002, 0x72DF) => "AMD RX 6800",
         (0x1002, 0x73DF) => "AMD RX 6700 XT",
         (0x1002, 0x7340) => "AMD RX 6600 XT",
-        (0x1002, 0x67DF) => "AMD RX 580",
-        (0x1002, 0x67DF) => "AMD RX 570",
+        (0x1002, 0x67BF) => "AMD RX 580",
+        (0x1002, 0x66BF) => "AMD RX 570",
         (0x1002, 0x67FF) => "AMD RX 560",
         
         // Intel GPUs

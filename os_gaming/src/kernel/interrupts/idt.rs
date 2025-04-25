@@ -1,9 +1,14 @@
 //! Interrupt Descriptor Table setup and management
-use super::IDT;
 use core::fmt;
 use crate::kernel::interrupts::handlers;
+use crate::kernel::interrupts::IDT;
+use lazy_static::lazy_static;
+use spin::Mutex;
 use x86_64::structures::idt::{InterruptDescriptorTable, InterruptStackFrame};
 
+extern "x86-interrupt" fn default_handler(stack_frame: InterruptStackFrame) {
+    panic!("Unhandled interrupt: {:#?}", stack_frame);
+}
 /// Initialize the Interrupt Descriptor Table with default handler
 
 pub fn init() {

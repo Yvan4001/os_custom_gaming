@@ -346,40 +346,23 @@ pub fn draw_pixel(x: u32, y: u32, color: Color) -> Result<(), &'static str> {
         DisplayMode::Text80x25 => {
             // Already handled above with error
             unreachable!()
-        }
+        },
         // Lower resolution modes - try VGA first
         DisplayMode::Vesa640x480 | DisplayMode::Vesa800x600 => {
             // Try using VGA for these lower resolutions
             #[cfg(not(feature = "std"))]
             {
                 // In real OS mode, try to use VGA hardware
-                let vga_result =
-                    vga::set_pixel(x, y, vga::Color::new_rgb(color.r, color.g, color.b));
-
-                if vga_result.is_err() {
-                    // Fall back to HDMI/DisplayPort if VGA fails
-                    try_modern_displays(x, y, color)
-                } else {
-                    vga_result
-                }
+                vga::set_pixel(x as usize, y as usize, vga::Color::new_rgb(color.r, color.g, color.b));
+                try_modern_displays(x, y, color)
             }
 
             #[cfg(feature = "std")]
-            {
-                // In std mode, just try modern displays
-                try_modern_displays(x, y, color)
-            }
-        }
+            try_modern_displays(x, y, color)
+        },
         // Higher resolution modes - use HDMI or DisplayPort
         _ => try_modern_displays(x, y, color),
     };
-
-    // Try to flush if pixel was drawn successfully
-    if result.is_ok() {
-        // We don't want to fail just because flush failed, so ignore any errors
-        let _ = hdmi::flush();
-        let _ = displayport::flush();
-    }
 
     result
 }

@@ -9,6 +9,7 @@ pub mod boot;
 pub use cpu::init as cpu_init;
 pub use memory::memory_init;
 pub use interrupts::init as interrupts_init;
+use crate::println;
 
 // Kernel initialization function
 pub fn init() {

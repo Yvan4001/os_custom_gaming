@@ -1,6 +1,7 @@
 //! CPU features and capabilities
-
+extern crate alloc;
 use raw_cpuid::{CpuId, ProcessorBrandString};
+use alloc::vec::Vec;
 
 /// Required CPU features for OS Gaming
 const REQUIRED_FEATURES: &[CpuFeature] = &[

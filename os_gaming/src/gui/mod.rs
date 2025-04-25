@@ -2,14 +2,15 @@
 //!
 //! This module provides a complete graphical user interface system optimized for gaming.
 
-mod renderer;
-mod window_manager;
-mod theme;
-mod input;
-mod font;
-mod windows_layout;  // Add the missing module declaration
+pub mod renderer;
+pub mod window_manager;
+pub mod theme;
+pub mod input;
+pub mod font;
+pub mod windows_layout;
+
+use core::arch::asm;
 use crate::Config;
-use crate::gui;
 
 // These will be implemented later
 mod widgets;
@@ -20,6 +21,41 @@ pub use window_manager::{WindowManager, Window};
 pub use font::FontManager;
 pub use theme::Theme;
 pub use windows_layout::WindowLayoutConfig;
+use crate::kernel::cpu;
+use crate::kernel::cpu::get_cpu_info;
+
+pub struct Instant {
+    timestamp: u64,
+}
+
+impl Instant {
+    pub fn now() -> Self {
+        Self {
+            timestamp: read_tsc()
+        }
+    }
+}
+
+// Lire le Time Stamp Counter
+fn read_tsc() -> u64 {
+    unsafe {
+        let low: u32;
+        let high: u32;
+        asm!(
+        "rdtsc",
+        out("eax") low,
+        out("edx") high,
+        options(nomem, nostack)
+        );
+        ((high as u64) << 32) | (low as u64)
+    }
+}
+
+
+fn processor_frequency() -> Option<cpu::identification::CpuInfo> {
+    return get_cpu_info()
+}
+
 
 /// Initialize the GUI components
 pub fn init_gui(config: Config) -> Result<(), &'static str> {
@@ -75,7 +111,7 @@ pub fn init_fonts() -> Result<(), &'static str> {
     // Try to load the system fonts
     let mut default_font_loaded = false;
     for font_path in &system_font_paths {
-        match font_manager.load_font("AssetFont", font_path) {
+        match font_manager.load_font("AssetFont", font_path.as_ref()) {
             Ok(font_id) => {
                 // Set the first successfully loaded font as default
                 if !default_font_loaded {
@@ -158,11 +194,11 @@ pub fn run_app(config: Config) {
 
     // Target frame rate
     let target_frame_time = 1.0 / config.refresh_rate as f64;
-    let mut last_frame_time = std::time::Instant::now();
+    let mut last_frame_time = Instant::now();
     
     // FPS counter
     let mut frames = 0;
-    let mut fps_timer = std::time::Instant::now();
+    let mut fps_timer = Instant::now();
     let mut current_fps = 0;
 
     // Main loop running flag
@@ -172,20 +208,6 @@ pub fn run_app(config: Config) {
     
     // Main application loop
     while running {
-        // Calculate frame timing
-        let now = std::time::Instant::now();
-        let elapsed = now.duration_since(last_frame_time).as_secs_f64();
-        last_frame_time = now;
-
-        // Update FPS counter
-        frames += 1;
-        if fps_timer.elapsed().as_secs() >= 1 {
-            current_fps = frames;
-            frames = 0;
-            fps_timer = std::time::Instant::now();
-            log::debug!("Current FPS: {}", current_fps);
-        }
-
         // Process input events
         input_handler.update();
         while let Some(event) = input_handler.next_event() {
@@ -249,12 +271,6 @@ pub fn run_app(config: Config) {
         // Render all windows
         window_manager.render();
         
-        // Maintain target frame rate with sleep if needed
-        let frame_time = std::time::Instant::now().duration_since(last_frame_time).as_secs_f64();
-        if frame_time < target_frame_time {
-            let sleep_time = target_frame_time - frame_time;
-            std::thread::sleep(std::time::Duration::from_secs_f64(sleep_time));
-        }
     }
     
     // Perform cleanup

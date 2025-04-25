@@ -3,6 +3,10 @@ use crate::kernel::interrupts;
 use crate::Config;
 use lazy_static::lazy_static;
 use spin::Mutex;
+extern crate alloc;
+use alloc::string::String;
+
+use crate::println;
 
 /// Boot status tracking
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -401,7 +405,6 @@ fn power_init() -> Result<(), &'static str> {
 
 /// Panic handler for kernel boot errors
 #[cfg(not(feature = "std"))]
-#[panic_handler]
 fn panic(info: &core::panic::PanicInfo) -> ! {
     println!("Kernel panic during boot: {}", info);
     

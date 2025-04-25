@@ -2,7 +2,7 @@ use crate::println;
 use spin::Mutex;
 use lazy_static::lazy_static;
 use x86_64::instructions::port::{Port, PortReadOnly, PortWriteOnly};
-
+use alloc::vec::Vec;
 
 
 lazy_static! {

@@ -5,6 +5,7 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use core::arch::asm;
 use spin::Mutex;
 use lazy_static::lazy_static;
+use micromath::F32Ext;
 
 /// Gamepad types we can support
 #[derive(Debug, Clone, Copy, PartialEq)]

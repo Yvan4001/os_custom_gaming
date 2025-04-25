@@ -12,7 +12,9 @@ mod allocator;
 
 use spin::Mutex;
 use lazy_static::lazy_static;
-use memory_manager::{MemoryError, MemoryManager};
+use x86_64::structures::paging::{FrameAllocator, Mapper, PageSize, PageTableFlags};
+use memory_manager::{MemoryError, MemoryManager, PhysicalMemoryManager};
+use crate::kernel::memory::r#virtual::VirtualMemoryManager;
 
 // Create thread-safe static reference to the memory manager
 lazy_static! {
@@ -22,13 +24,13 @@ lazy_static! {
 /// Initialize memory management subsystem
 pub fn memory_init(multiboot_info_addr: usize) -> Result<(), &'static str> {
     // Initialize the physical memory manager first
-    physical::init(multiboot_info_addr)?;
+    physical::init()?;
     
     // Initialize the kernel heap allocator
     allocator::init(0)?;
     
     // Initialize the virtual memory manager (paging)
-    r#virtual::init()?;
+    r#virtual::init(32)?;
     
     // Initialize DMA support for devices
     dma::init()?;
@@ -36,27 +38,34 @@ pub fn memory_init(multiboot_info_addr: usize) -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Allocate virtual memory with specified size
-pub fn allocate_virtual(size: usize, align: usize) -> Result<*mut u8, MemoryError> {
-    let mut manager = MEMORY_MANAGER.lock();
-    manager.allocate(size, align)
-}
-
 pub fn deallocate_virtual(ptr: *mut u8) {
     let mut manager = MEMORY_MANAGER.lock();
-    manager.deallocate(ptr);
+    manager.deallocate(ptr, 0);
 }
+
+pub fn allocate_virtual(size: usize) -> Result<*mut u8, MemoryError> {
+    let mut manager = MEMORY_MANAGER.lock();
+    manager.allocate(size, 0).map(|non_null| non_null.as_ptr())
+}
+
 
 /// Free previously allocated virtual memory
 pub fn free_virtual(ptr: *mut u8) {
     let mut manager = MEMORY_MANAGER.lock();
-    manager.free(ptr);
+    manager.free(ptr, 0);
 }
 
 /// Map physical memory to virtual address space
-pub fn map_physical(phys_addr: usize, size: usize) -> Result<*mut u8, MemoryError> {
+pub fn map_physical(
+    phys_addr: PhysicalMemoryManager,
+    size: usize,
+    flags: PageTableFlags,
+    mapper: &mut impl Mapper<x86_64::structures::paging::Size4KiB>,
+    allocator: &mut impl FrameAllocator<x86_64::structures::paging::Size4KiB>
+) -> Result<*mut u8, MemoryError> {
     let mut manager = MEMORY_MANAGER.lock();
-    manager.map_physical(phys_addr, size)
+    manager.map_physical(phys_addr, size, flags, mapper, allocator)
+        .map(|virt_addr| virt_addr.as_mut_ptr())
 }
 
 /// Get current memory usage statistics

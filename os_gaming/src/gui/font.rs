@@ -1,7 +1,50 @@
-use std::collections::HashMap;
-use std::path::Path;
-use std::sync::Arc;
-use eframe::egui::{self, FontDefinitions, FontFamily, TextStyle};
+#![no_std]
+
+extern crate alloc;
+
+use alloc::string::{String, ToString};
+use alloc::vec::Vec;
+use alloc::sync::Arc;
+use alloc::{format, vec};
+use hashbrown::HashMap;
+use core::convert::AsRef;
+
+#[derive(Default)]
+pub struct FontDefinitions {
+    pub font_data: HashMap<String, Arc<FontData>>,
+    pub families: HashMap<FontFamily, Vec<String>>,
+}
+
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub enum FontFamily {
+    Proportional,
+    Monospace,
+}
+
+#[derive(Clone)]
+pub struct FontData {
+    pub data: Vec<u8>,
+}
+
+#[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
+pub enum TextStyle {
+    Heading,
+    Body,
+    Monospace,
+    Button,
+    Small,
+}
+
+pub struct FontId {
+    pub size: f32,
+    pub family: FontFamily,
+}
+
+impl FontId {
+    pub fn new(size: f32, family: FontFamily) -> Self {
+        Self { size, family }
+    }
+}
 
 pub struct FontManager {
     fonts: HashMap<String, usize>,
@@ -18,17 +61,17 @@ impl FontManager {
         }
     }
 
-    pub fn load_font(&mut self, name: &str, path: impl AsRef<Path>) -> Result<(), String> {
-        let font_data = std::fs::read(path)
-            .map_err(|e| format!("Failed to load font {}: {}", name, e))?;
+    pub fn load_font(&mut self, name: &str, font_data: &[u8]) -> Result<(), String> {
         let font_index = self.font_definitions.font_data.len();
 
         self.font_definitions.font_data.insert(
             name.to_string(),
-            Arc::new(egui::FontData::from_owned(font_data)),
+            Arc::new(FontData {
+                data: font_data.to_vec(),
+            }),
         );
         self.fonts.insert(name.to_string(), font_index);
-        
+
         Ok(())
     }
 
@@ -40,45 +83,23 @@ impl FontManager {
         self.font_definitions
             .families
             .entry(family)
-            .or_default()
+            .or_insert_with(Vec::new)
             .push(font_name.to_string());
 
         Ok(())
     }
 
-    pub fn configure_text_styles(&mut self, ctx: &egui::Context) {
-        let mut style = (*ctx.style()).clone();
-        
-        // Configure text styles with different sizes
-        style.text_styles = [
-            (TextStyle::Heading, egui::FontId::new(24.0, FontFamily::Proportional)),
-            (TextStyle::Body, egui::FontId::new(16.0, FontFamily::Proportional)),
-            (TextStyle::Monospace, egui::FontId::new(14.0, FontFamily::Monospace)),
-            (TextStyle::Button, egui::FontId::new(16.0, FontFamily::Proportional)),
-            (TextStyle::Small, egui::FontId::new(12.0, FontFamily::Proportional)),
-        ].into();
-
-        ctx.set_style(style);
-    }
-
-    pub fn apply_to_context(&self, ctx: &egui::Context) {
-        ctx.set_fonts(self.font_definitions.clone());
-    }
-
     pub fn setup_default_fonts(&mut self) -> Result<(), String> {
-        // This would be replaced with actual font loading in a real application
-        // For example: self.load_font("roboto", "assets/fonts/Roboto-Regular.ttf")?;
-        
-        // Set default font families
+        // Définition des familles de polices par défaut
         self.font_definitions.families.insert(
             FontFamily::Proportional,
-            vec!["Roboto-Regular".to_string()]
+            vec!["default-prop".to_string()]
         );
         self.font_definitions.families.insert(
             FontFamily::Monospace,
-            vec!["Roboto-Mono".to_string()]
+            vec!["default-mono".to_string()]
         );
-        
+
         Ok(())
     }
 
@@ -90,10 +111,18 @@ impl FontManager {
         let font_index = self.font_definitions.font_data.len();
         self.font_definitions.font_data.insert(
             name.to_string(),
-            Arc::new(egui::FontData::from_owned(data.to_vec())),
+            Arc::new(FontData {
+                data: data.to_vec(),
+            }),
         );
         self.fonts.insert(name.to_string(), font_index);
-        
+
         Ok(())
+    }
+}
+
+impl Default for FontManager {
+    fn default() -> Self {
+        Self::new()
     }
 }

@@ -6,10 +6,12 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use lazy_static::lazy_static;
 use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::{Translate, RecursivePageTable};
 use bit_field::BitArray;
 
 #[cfg(not(feature = "std"))]
 use bootloader::bootinfo::{MemoryMap, MemoryRegionType};
+use crate::kernel::memory::memory_manager::current_page_table;
 
 /// Size of a page (4KB)
 pub const PAGE_SIZE: usize = 4096;
@@ -225,8 +227,8 @@ impl PhysicalMemoryManager {
         self.total_memory.store(total_memory, Ordering::SeqCst);
         
         // Calculate kernel size
-        let kernel_size = (kernel_end - kernel_start).as_usize();
-        self.kernel_size.store(kernel_size, Ordering::SeqCst);
+        let kernel_size = (kernel_end - kernel_start);
+        self.kernel_size.store(kernel_size as usize, Ordering::SeqCst);
         
         // Mark kernel pages as used
         let kernel_start_frame = kernel_start.as_u64() as usize / PAGE_SIZE;
@@ -235,6 +237,10 @@ impl PhysicalMemoryManager {
         for frame in kernel_start_frame..kernel_end_frame {
             bitmap.set_frame(frame, true);
         }
+    }
+    
+    pub fn as_u64(self) -> u64 {
+        self.kernel_start.as_u64()
     }
     
     /// Allocate a physical frame
@@ -351,6 +357,7 @@ pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
     }
 }
 
+
 /// Convert a virtual address to a physical address
 pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
     #[cfg(not(feature = "std"))]
@@ -359,22 +366,25 @@ pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
         if virt.as_u64() >= 0xFFFF800000000000 {
             Some(PhysAddr::new(virt.as_u64() - 0xFFFF800000000000))
         } else {
-            // Use the page tables to translate
-            use x86_64::structures::paging::Translate;
-            use x86_64::structures::paging::page::Size4KiB;
-            
-            let page_table = super::current_page_table();
-            
-            unsafe {
-                let page_table = &mut *page_table;
-                page_table.translate_addr(virt)
-            }
+            use x86_64::structures::paging::{Translate, OffsetPageTable};
+
+            // Définir l'offset physique-vers-virtuel
+            let phys_offset = VirtAddr::new(0xFFFF800000000000);
+
+            // Obtenir la table de pages courante
+            let page_table = unsafe {
+                let page_table = &mut *current_page_table();
+                OffsetPageTable::new(page_table, phys_offset)
+            };
+
+            // Translate the virtual address to a physical address
+            page_table.translate_addr(virt)
         }
     }
-    
+
     #[cfg(feature = "std")]
     {
-        // In std mode, this is just simulated
+        // En mode std, c'est juste simulé
         Some(PhysAddr::new(virt.as_u64()))
     }
 }

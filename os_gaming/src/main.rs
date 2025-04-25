@@ -1,29 +1,65 @@
+#![no_std]
+#![no_main]
 
-#[cfg(feature = "std")]
+extern crate alloc;
 
-use std::process;
+use core::panic::PanicInfo;
+use log::{info, error};
+use os_gaming::{gui, kernel, logger};
+use core::option::Option::Some;
+use core::clone::Clone;
+use core::default::Default;
+use core::marker::Send;
+use core::marker::Sync;
+use core::result::Result::Ok;
+use core::result::Result::Err;
+use core::result::Result;
+use core::mem::drop;
+use core::ops::FnOnce;
+use core::option::Option;
+use core::option::Option::None;
 
-use os_gaming::{self, Config};
-use os_gaming::system::init;
-use core::arch::asm;
+#[no_mangle]
+pub extern "C" fn _start() -> ! {
+    // Initialisation du logger
+    logger::init().expect("Logger initialization failed");
+    info!("Starting OS Gaming...");
 
-fn main() {
-    #[cfg(feature = "std")]
-    env_logger::init();
-    
-    match os_gaming::init() {
-        Ok(config) => {
-            #[cfg(feature = "std")]
-            {
-                println!("OS Gaming initialized successfully!");
-                // Launch GUI application
-                os_gaming::gui::init_gui(config);
-            }
-        }
+    // Initialisation du kernel
+    info!("Init Kernel...");
+    match init_kernel() {
+        Ok(_) => info!("Kernel successfully initialized"),
         Err(e) => {
-            eprintln!("Failed to initialize: {}", e);
-            #[cfg(feature = "std")]
-            process::exit(1);
+            error!("Error when Kernel initialize: {:?}", e);
+            loop {}
         }
     }
+
+    // Initialisation du GUI
+    info!("Init GUI...");
+    match init_gui() {
+        Ok(_) => info!("GUI successfully initialized"),
+        Err(e) => {
+            error!("Error when GUI initialize: {:?}", e);
+            loop {}
+        }
+    }
+
+    loop {}
+}
+
+fn init_kernel() -> Result<(), &'static str> {
+    kernel::init();
+    Ok(())
+}
+
+fn init_gui() -> Result<(), &'static str> {
+    gui::init_gui(Default::default());
+    Ok(())
+}
+
+#[panic_handler]
+fn panic(info: &PanicInfo) -> ! {
+    error!("PANIC: {}", info);
+    loop {}
 }

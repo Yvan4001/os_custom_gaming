@@ -1,6 +1,34 @@
 use crate::kernel::memory::physical::PhysicalMemoryManager;
 use crate::kernel::memory::r#virtual::VirtualMemoryManager;
 use core::sync::atomic::{AtomicBool, Ordering};
+extern crate alloc;
+use alloc::vec::Vec;
+use x86_64::PhysAddr;
+use core::ptr;
+
+
+// Helper function to read PCI configuration space
+unsafe fn pci_read_config_u8(bus: u8, device: u8, function: u8, offset: u8) -> u8 {
+    let address = 0x80000000
+        | ((bus as u32) << 16)
+        | ((device as u32) << 11)
+        | ((function as u32) << 8)
+        | (offset as u32);
+
+    // Write address to CONFIG_ADDRESS port
+    let mut addr_port = x86_64::instructions::port::Port::new(0xCF8);
+    addr_port.write(address);
+
+    // Read data from CONFIG_DATA port
+    let mut data_port = x86_64::instructions::port::Port::new(0xCFC + (offset & 3) as u16);
+    data_port.read()
+}
+
+unsafe fn pci_read_config_u16(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
+    let low = pci_read_config_u8(bus, device, function, offset);
+    let high = pci_read_config_u8(bus, device, function, offset + 1);
+    ((high as u16) << 8) | (low as u16)
+}
 
 
 /// Represents a DMA buffer allocation.
@@ -49,6 +77,29 @@ pub struct DmaRegion {
     pub dma_type : DmaType,
     pub limit: DmaAddressLimit,
 }
+
+#[derive(Debug)]
+pub struct DmarTable {
+    length: u32,
+    drhd_units: Vec<DrhdUnit>,
+}
+
+#[derive(Debug)]
+pub struct DrhdUnit {
+    register_base: PhysAddr,
+    segment: u16,
+    flags: u8,
+    scope: Vec<DeviceScope>,
+}
+
+#[derive(Debug)]
+pub struct DeviceScope {
+    r#type: u8,
+    bus: u8,
+    device: u8,
+    function: u8,
+}
+
 
 impl Default for DmaAllocOptions {
     fn default() -> Self {
@@ -157,7 +208,73 @@ impl DmaManager {
         
         Ok(())
     }
-    
+
+    fn enumerate_pci_dma_devices(&self) -> Vec<PciDmaDevice> {
+        let mut dma_devices = Vec::new();
+
+        // Scan all PCI buses (0-255), devices (0-31), and functions (0-7)
+        for bus in 0..=255 {
+            for device in 0..32 {
+                for function in 0..8 {
+                    // Read PCI configuration space
+                    let vendor_id = unsafe {
+                        pci_read_config_u16(bus, device, function, 0x00)
+                    };
+
+                    // Skip if no device present (vendor ID = 0xFFFF)
+                    if vendor_id == 0xFFFF {
+                        continue;
+                    }
+
+                    // Read device capabilities
+                    let status = unsafe {
+                        pci_read_config_u16(bus, device, function, 0x06)
+                    };
+
+                    // Check if device has capabilities list (bit 4 of status register)
+                    if status & (1 << 4) != 0 {
+                        // Read capabilities pointer
+                        let cap_pointer = unsafe {
+                            pci_read_config_u8(bus, device, function, 0x34)
+                        };
+
+                        // Traverse capabilities list
+                        let mut current_cap = cap_pointer;
+                        while current_cap != 0 {
+                            let cap_id = unsafe {
+                                pci_read_config_u8(bus, device, function, current_cap)
+                            };
+
+                            // Check for DMA capability (ID = 0x09)
+                            if cap_id == 0x09 {
+                                // Device supports DMA, create device info
+                                let device_id = unsafe {
+                                    pci_read_config_u16(bus, device, function, 0x02)
+                                };
+                                let class_code = unsafe {
+                                    pci_read_config_u8(bus, device, function, 0x0B)
+                                };
+                                let subclass = unsafe {
+                                    pci_read_config_u8(bus, device, function, 0x0A)
+                                };
+                                
+                                break; // Found DMA capability, move to next device
+                            }
+
+                            // Move to next capability
+                            current_cap = unsafe {
+                                pci_read_config_u8(bus, device, function, current_cap + 1)
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        dma_devices
+    }
+
+
     /// Initialize legacy 8237 DMA controller
     #[cfg(not(feature = "std"))]
     fn init_legacy_dma(&self) -> Result<(), &'static str> {
@@ -349,7 +466,158 @@ impl DmaManager {
         }
         Err("No available buffer pools")
     }
+    pub fn parse_drhd_units(dmar: &mut DmarTable) -> Result<(), &'static str> {
+        let mut offset: u64 = 48; // Skip DMAR header
+        while offset < dmar.length as u64 {
+            // SAFETY: Reading ACPI table contents
+            unsafe {
+                let entry_type = read_physical_u16(PhysAddr::new(offset))
+                    .ok_or("Failed to read entry type")?;
+                let entry_length = read_physical_u16(PhysAddr::new(offset + 2))
+                    .ok_or("Failed to read entry length")?;
+
+                // DRHD unit (type = 0)
+                if entry_type == 0 {
+                    let flags = read_physical_u8(PhysAddr::new(offset + 4))
+                        .ok_or("Failed to read DRHD flags")?;
+                    let segment = read_physical_u16(PhysAddr::new(offset + 6))
+                        .ok_or("Failed to read DRHD segment")?;
+                    let register_base = PhysAddr::new(
+                        read_physical_u64(PhysAddr::new(offset + 8))
+                            .ok_or("Failed to read IOMMU register base address")?
+                    );
+
+                    let mut unit = DrhdUnit {
+                        register_base,
+                        segment,
+                        flags,
+                        scope: Vec::new(),
+                    };
+
+                    // Parse device scope
+                    let mut scope_offset = offset + 16;
+                    while scope_offset < offset + entry_length as u64 {
+                        let scope_type = read_physical_u8(PhysAddr::new(scope_offset))
+                            .ok_or("Failed to read scope type")?;
+                        let scope_length = read_physical_u8(PhysAddr::new(scope_offset + 1))
+                            .ok_or("Failed to read scope length")?;
+                        let bus = read_physical_u8(PhysAddr::new(scope_offset + 2))
+                            .ok_or("Failed to read bus number")?;
+                        let device = read_physical_u8(PhysAddr::new(scope_offset + 3))
+                            .ok_or("Failed to read device number")?;
+                        let function = read_physical_u8(PhysAddr::new(scope_offset + 4))
+                            .ok_or("Failed to read function number")?;
+
+                        unit.scope.push(DeviceScope {
+                            r#type: scope_type,
+                            bus,
+                            device,
+                            function,
+                        });
+                        scope_offset += scope_length as u64;
+                    }
+                    dmar.drhd_units.push(unit);
+                }
+                offset += entry_length as u64;
+            }
+        }
+        Ok(())
+    }
+
+    pub fn detect_iommu() -> Result<bool, &'static str> {
+        // Check CPUID for IOMMU/VT-d support
+        let cpuid = raw_cpuid::CpuId::new();
+
+        if let Some(vt_features) = cpuid.get_feature_info() {
+            // First check for VMX (VT-x) support
+            if !vt_features.has_vmx() {
+                return Ok(false);
+            }
+        } else {
+            return Err("Failed to read CPU features");
+        }
+
+        // Check extended features for VT-d support
+        if let Some(ext_features) = cpuid.get_extended_feature_info() {
+            if !ext_features.has_avx2() {
+                return Ok(false);
+            }
+        } else {
+            return Err("Failed to read extended CPU features");
+        }
+
+        // Try to find DMAR table
+        if find_acpi_dmar_table().is_none() {
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
+    pub fn configure_global_iommu() -> Result<(), &'static str> {
+        // Get DMAR table
+        let mut dmar = find_acpi_dmar_table()
+            .ok_or("No DMAR table found")?;
+
+        // Parse DRHD units
+        Self::parse_drhd_units(&mut dmar)?;
+
+        for unit in &dmar.drhd_units {
+            // SAFETY: Accessing IOMMU MMIO registers
+            unsafe {
+                // Enable VT-d globally
+                write_physical_u32(unit.register_base + 0x10, 1);
+
+                // Wait for IOMMU to become ready
+                while read_physical_u32(unit.register_base + 0x10)
+                    .ok_or("Failed to read IOMMU status register")? & (1 << 31) == 0
+                {
+                    core::hint::spin_loop();
+                }
+
+            }
+        }
+
+        Ok(())
+    }
     
+
+    pub fn setup_dma_remapping_tables() -> Result<(), &'static str> {
+        // Allocate root table (4KB aligned)
+        let root_table = allocate_page()?;
+
+        // For each DRHD unit
+        let dmar = find_acpi_dmar_table()
+            .ok_or("No DMAR table found")?;
+
+        for unit in &dmar.drhd_units {
+            // SAFETY: Accessing IOMMU MMIO registers
+            unsafe {
+                // Set root table address
+                write_physical_u64(unit.register_base + 0x20, root_table.as_u64() | 1);
+
+                // Invalidate context cache
+                write_physical_u64(unit.register_base + 0x28, 1);
+
+                // Wait for invalidation completion
+                while read_physical_u32(unit.register_base + 0x2C)
+                    .ok_or("Failed to read invalidation status register")? & 1 == 0
+                {
+                    core::hint::spin_loop();
+                }
+
+                // Enable DMA remapping
+                let global_command = read_physical_u32(unit.register_base + 0x10)
+                    .ok_or("Failed to read global command register")?;
+                write_physical_u32(unit.register_base + 0x10, global_command | (1 << 30));
+            }
+        }
+
+        Ok(())
+    }
+    
+
+
     /// Initialize IOMMU if available
     fn initialize_iommu(&self) -> Result<(), &'static str> {
         #[cfg(feature = "std")]
@@ -357,49 +625,42 @@ impl DmaManager {
             // In std mode, we simulate the hardware
             return Ok(());
         }
-        
+
         #[cfg(not(feature = "std"))]
         {
             // Check for Intel VT-d or AMD IOMMU
-            let iommu_available = self.detect_iommu();
-            
+            let iommu_available = DmaManager::detect_iommu()?;
+
             if iommu_available {
                 // Initialize the IOMMU
-                
-                // 1. Find DMAR or IVRS ACPI tables
-                let dmar_table = self.find_acpi_dmar_table();
-                
-                if let Some(dmar_addr) = dmar_table {
-                    // 2. Parse DMAR table to find DRHDs (DMA Remapping Hardware Units)
-                    let drhd_units = self.parse_drhd_units(dmar_addr);
-                    
-                    // 3. Initialize each DRHD unit
-                    for drhd in drhd_units {
-                        self.init_drhd_unit(drhd)?;
-                    }
-                    
-                    // 4. Configure global IOMMU settings
-                    self.configure_global_iommu()?;
-                    
-                    // 5. Set up DMA remapping tables
-                    self.setup_dma_remapping_tables()?;
-                    
-                    let mut iommu_info = IOMMU_INFO.write();
-                    iommu_info.available = true;
-                    iommu_info.initialized = true;
-                    
-                    #[cfg(feature = "log")]
-                    log::info!("IOMMU initialized successfully");
-                } else {
-                    #[cfg(feature = "log")]
-                    log::warn!("IOMMU detected but DMAR table not found");
-                }
+
+                // 1. Find DMAR ACPI table
+                let mut dmar_table = find_acpi_dmar_table()
+                    .ok_or("DMAR table not found")?;
+
+                // 2. Parse DMAR table to find DRHDs (DMA Remapping Hardware Units)
+                DmaManager::parse_drhd_units(&mut dmar_table)?;
+
+                // 3. Configure global IOMMU settings
+                DmaManager::configure_global_iommu()?;
+
+                // 4. Set up DMA remapping tables
+                DmaManager::setup_dma_remapping_tables()?;
+
+                // Update IOMMU status
+                let mut iommu_info = IOMMU_INFO.write();
+                iommu_info.available = true;
+                iommu_info.initialized = true;
+                iommu_info.is_intel = true; // Since we're using VT-d
+
+                #[cfg(feature = "log")]
+                log::info!("IOMMU initialized successfully");
             } else {
                 #[cfg(feature = "log")]
                 log::info!("No IOMMU detected, using direct DMA");
             }
         }
-        
+
         Ok(())
     }
     
@@ -449,6 +710,7 @@ impl DmaManager {
         }
         Ok(())
     }
+
 }
 
 // Create a global DMA manager instance
@@ -472,6 +734,8 @@ fn allocate_dma_region(
         limit,
     })
 }
+
+
 
 struct DmaControllerInfo {
     legacy_dma_available: bool,
@@ -562,6 +826,84 @@ impl IommuInfo {
             is_amd: false,
         }
     }
+}
+
+// Helper functions
+unsafe fn find_rsdp() -> Option<PhysAddr> {
+    let mut addr = 0xE0000;
+    while addr < 0x100000 {
+        let signature = read_physical_u64(PhysAddr::new(addr))?;
+        if signature == 0x2052545020445352 { // "RSD PTR "
+            return Some(PhysAddr::new(addr));
+        }
+        addr += 16;
+    }
+    None
+}
+
+unsafe fn read_physical_addr(addr: PhysAddr) -> Option<PhysAddr> {
+    Some(PhysAddr::new(read_physical_u64(addr)?))
+}
+
+unsafe fn read_physical_u64(addr: PhysAddr) -> Option<u64> {
+    Some(ptr::read_volatile(addr.as_u64() as *const u64))
+}
+
+unsafe fn read_physical_u32(addr: PhysAddr) -> Option<u32> {
+    Some(ptr::read_volatile(addr.as_u64() as *const u32))
+}
+
+unsafe fn read_physical_u16(addr: PhysAddr) -> Option<u16> {
+    Some(ptr::read_volatile(addr.as_u64() as *const u16))
+}
+
+unsafe fn read_physical_u8(addr: PhysAddr) -> Option<u8> {
+    Some(ptr::read_volatile(addr.as_u64() as *const u8))
+}
+
+unsafe fn write_physical_u64(addr: PhysAddr, value: u64) {
+    ptr::write_volatile(addr.as_u64() as *mut u64, value);
+}
+
+unsafe fn write_physical_u32(addr: PhysAddr, value: u32) {
+    ptr::write_volatile(addr.as_u64() as *mut u32, value);
+}
+
+fn allocate_page() -> Result<PhysAddr, &'static str> {
+    // Implementation depends on your memory allocator
+    // Should return 4KB aligned physical address
+    unimplemented!("Page allocation not implemented")
+}
+
+pub fn find_acpi_dmar_table() -> Option<DmarTable> {
+    // SAFETY: This accesses ACPI tables in physical memory
+    unsafe {
+        // Search for RSDP in BIOS area (0xE0000 - 0xFFFFF)
+        let rsdp_addr = find_rsdp()?;
+
+        // Get RSDT/XSDT from RSDP
+        let rsdt_addr = read_physical_addr(rsdp_addr + 16)?;
+
+        // Search RSDT entries for "DMAR" signature
+        let rsdt_length = read_physical_u32(rsdt_addr + 4)?;
+        let entries = (rsdt_length - 36) / 4;
+
+        for i in 0..entries {
+            let entry_addr = read_physical_addr(rsdt_addr + 36 + (i * 4) as u64)?;
+            let signature = read_physical_u32(entry_addr)?;
+
+            // Check for "DMAR" signature (0x52414D44)
+            if signature == 0x52414D44 {
+                let length = read_physical_u32(entry_addr + 4)?;
+                return Some(DmarTable {
+                    length,
+                    drhd_units: Vec::new(),
+                });
+            }
+        }
+    }
+
+    None
 }
 
 pub fn init() -> Result<(), &'static str> {

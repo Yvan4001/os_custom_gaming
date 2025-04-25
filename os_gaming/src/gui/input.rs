@@ -1,4 +1,6 @@
-use std::collections::{HashSet, VecDeque};
+use alloc::collections::VecDeque;
+use alloc::vec::Vec;
+use hashbrown::HashSet;
 
 /// Represents different input states.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

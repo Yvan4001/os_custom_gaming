@@ -2,11 +2,16 @@ use crate::kernel::interrupts;
 use core::sync::atomic::{AtomicU8, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
+use alloc::vec;
+use alloc::vec::Vec;
+use alloc::boxed::Box;
+
 use x86_64::instructions::port::Port;
 use x86_64::structures::idt::InterruptStackFrame;
 
-#[cfg(feature = "std")]
-use std::sync::mpsc::Sender;
+
+type KeyEventCallback = Box<dyn Fn(KeyEvent) + Send + 'static>;
+
 
 // Keyboard port for data read
 const KEYBOARD_PORT: u16 = 0x60;
@@ -14,8 +19,8 @@ const KEYBOARD_PORT: u16 = 0x60;
 // Scancode buffers to store last pressed key
 lazy_static! {
     static ref KEYBOARD_STATE: Mutex<KeyboardState> = Mutex::new(KeyboardState::new());
-    #[cfg(feature = "std")]
-    static ref KEY_EVENT_SENDER: Mutex<Option<Sender<KeyEvent>>> = Mutex::new(None);
+    
+    static ref KEY_EVENT_SENDER: Mutex<Option<KeyEventCallback>> = Mutex::new(None);
 }
 
 // Track if a key is pressed or released
@@ -171,18 +176,17 @@ fn map_scancode(scancode: u8, shift_pressed: bool, num_lock: bool) -> Option<cha
 
 // Keyboard interrupt handler
 pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: InterruptStackFrame) {
-    
     let mut port = Port::new(KEYBOARD_PORT);
     let scancode: u8 = unsafe { port.read() };
-    
+
     // Store the scancode
     LAST_SCANCODE.store(scancode, Ordering::SeqCst);
-    
+
     // Update keyboard state
     let mut keyboard = KEYBOARD_STATE.lock();
     keyboard.scancode = scancode;
     keyboard.update_modifiers(scancode);
-    
+
     // Convert scancode to character
     if let Some(key) = map_scancode(scancode, keyboard.shift_pressed, keyboard.num_lock) {
         let event = KeyEvent {
@@ -195,15 +199,15 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
             key_code: scancode as u16,
             modifiers: 0,
         };
-        
+
         #[cfg(feature = "std")]
         {
             // Send key event to GUI if we're in std mode
             if let Some(sender) = &*KEY_EVENT_SENDER.lock() {
-                let _ = sender.send(event);
+                sender(event);
             }
         }
-        
+
         #[cfg(not(feature = "std"))]
         {
             // In kernel mode, maybe update a console directly
@@ -216,7 +220,7 @@ pub extern "x86-interrupt" fn keyboard_interrupt_handler(_stack_frame: Interrupt
             }
         }
     }
-    
+
     // Send End-Of-Interrupt signal
     unsafe {
         interrupts::PICS.notify_end_of_interrupt(interrupts::KEYBOARD_INTERRUPT_INDEX);

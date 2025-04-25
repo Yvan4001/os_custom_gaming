@@ -1,4 +1,5 @@
 use core::{fmt, result};
+use alloc::vec::Vec;
 
 
 /// Possible errors that can occur during GPU operations.

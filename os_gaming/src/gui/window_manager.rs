@@ -1,13 +1,14 @@
 //! Window management system
 //!
 //! This module handles window creation, movement, focus, and rendering.
+#![no_std]
 
 extern crate alloc;
 use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use alloc::{string::String, vec::Vec};
 use bincode::{Decode, Encode};
-use egui::Event;
 use spin::Mutex;
+
 
 use super::renderer::{Color, Rect, Renderer, RendererError};
 use super::theme::Theme;
@@ -29,6 +30,20 @@ pub struct Window {
     border_color: Color,
     user_data: Option<*mut u8>, // Raw pointer to user-defined data
 }
+
+#[derive(Debug, Clone, Copy)]
+pub enum Event {
+    MouseMove { x: i32, y: i32 },
+    MousePress { button: u8, x: i32, y: i32 },
+    MouseRelease { button: u8, x: i32, y: i32 },
+    KeyPress { key: u16 },
+    KeyRelease { key: u16 },
+    WindowResize { width: u32, height: u32 },
+    WindowClose,
+    WindowFocus,
+    WindowBlur,
+}
+
 
 /// Window events
 #[derive(Debug, Clone, Copy)]

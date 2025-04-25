@@ -1,6 +1,9 @@
 // filepath: /media/yvan/Linux_plus/projet_dev/os_custom_gaming/os_gaming/src/kernel/drivers/gpu/specific/nvidia/common.rs
 //! Common utilities and structures for NVIDIA GPU drivers
-
+extern crate alloc;
+use alloc::string::String;
+use crate::println;
+use core::ptr;
 /// Represents a generic NVIDIA GPU device
 #[derive(Debug)]
 pub struct NvidiaGpuDevice {
@@ -31,7 +34,7 @@ pub fn allocate_memory(size: usize) -> Result<*mut u8, NvidiaError> {
     // Memory allocation logic for the NVIDIA GPU
     // This is a placeholder for actual memory allocation code
     println!("Allocating {} bytes on NVIDIA GPU", size);
-    Ok(std::ptr::null_mut()) // Placeholder for allocated memory pointer
+    Ok(ptr::null_mut()) // Placeholder for allocated memory pointer
 }
 
 /// Frees memory allocated on the NVIDIA GPU
@@ -52,5 +55,5 @@ pub fn map_mmio(physical_address: usize, size: usize) -> Result<*mut u8, NvidiaE
     // Map MMIO region
     // This is a placeholder for actual mapping code
     println!("Mapping MMIO region at {:#x} of size {} bytes", physical_address, size);
-    Ok(std::ptr::null_mut()) // Placeholder for mapped memory pointer
+    Ok(ptr::null_mut()) // Placeholder for mapped memory pointer
 }

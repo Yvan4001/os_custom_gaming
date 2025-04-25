@@ -1,15 +1,12 @@
 #![cfg_attr(not(feature = "std"), no_std)]
 #![cfg_attr(not(feature = "std"), no_main)]
-#![feature(core_intrinsics)]
-#![feature(asm_experimental_arch)]
-#![feature(asm_const)]
-#![feature(global_asm)]
 #![feature(abi_x86_interrupt)]
 // Set up proper imports for different environments
 #[cfg(feature = "std")]
 pub use std::boxed::Box;
 #[cfg(feature = "std")]
 pub use std::string::String;
+use crate::alloc::string::ToString;
 #[cfg(feature = "std")]
 pub use std::vec::Vec;
 
@@ -24,6 +21,13 @@ use core::cmp::PartialEq;
 use core::result::Result::Ok;
 use core::result::Result;
 use core::marker::Copy;
+use core::ops::FnOnce;
+use core::option::Option;
+use alloc::sync::Arc;
+use core::assert_eq;
+use core::assert;
+use core::convert::From;
+
 
 
 unsafe extern "C" fn __stack_chk_fail() {
@@ -48,7 +52,10 @@ pub mod config;
 #[cfg(feature = "std")]
 pub mod gui;
 pub mod kernel;
+pub mod gui;
 pub mod system;
+pub mod logger;
+
 
 // System constants
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -106,11 +113,7 @@ pub fn init() -> Result<Config, &'static str> {
 
     let config = Config::default();
 
-    #[cfg(feature = "std")]
-    kernel::boot::init(&config)?;
-
-    #[cfg(not(feature = "std"))]
-    kernel::boot::init_bare_metal(&config)?;
+    kernel::boot::init(&config);
 
     Ok(config)
 }
@@ -122,11 +125,5 @@ pub extern "C" fn _start() -> ! {
     let _ = init();
 
     // Main OS loop - never returns
-    loop {}
-}
-
-#[cfg(not(feature = "std"))]
-#[panic_handler]
-fn panic(_info: &PanicInfo) -> ! {
     loop {}
 }

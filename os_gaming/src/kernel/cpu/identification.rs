@@ -1,6 +1,8 @@
 use raw_cpuid::{CpuId, ProcessorBrandString};
 use spin::Mutex;
 use lazy_static::lazy_static;
+extern crate alloc;
+use alloc::string::{String, ToString};
 
 /// CPU information
 #[derive(Debug, Clone, Default)]

@@ -13,6 +13,7 @@ pub mod timer;
 pub mod power;
 pub mod displayport;
 pub mod gpu;
+mod inputs;
 
 use gamepad::GamepadManager;
 use keyboard::KeyboardState;
@@ -21,6 +22,7 @@ use power::PowerManager;
 use displayport::DisplayPortDriver;
 use hdmi::HdmiDriver;
 use vga::Writer;
+use crate::println;
 use sound::SoundDriver;
 use mouse::MouseState;
 use spin::Mutex;

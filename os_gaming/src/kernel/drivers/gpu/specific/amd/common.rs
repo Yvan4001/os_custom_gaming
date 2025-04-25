@@ -1,6 +1,7 @@
 //! Common utilities and structures for AMD GPU drivers
 extern crate alloc;
 use alloc::vec::Vec;
+use alloc::vec;
 use alloc::string::{String, ToString};
 use alloc::boxed::Box;
 use core::sync::atomic::{AtomicBool, Ordering};

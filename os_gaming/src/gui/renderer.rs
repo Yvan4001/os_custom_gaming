@@ -62,7 +62,7 @@ impl Color {
 }
 
 /// Represents a rectangular area
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct Rect {
     pub x: i32,
     pub y: i32,
@@ -196,7 +196,7 @@ impl Renderer {
             Err(_) => {
                 // Allocate our own framebuffer in system memory
                 let size = (width * height * 4) as usize;
-                let addr = memory::allocate_virtual(size, 16)
+                let addr = memory::allocate_virtual(size)
                     .map_err(|_| RendererError::InitializationFailed)?;
                 
                 // Zero the framebuffer

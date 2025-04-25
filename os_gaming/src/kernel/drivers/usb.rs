@@ -1,6 +1,7 @@
 extern crate alloc;
 
 use alloc::vec::Vec;
+use alloc::format;
 use alloc::string::String;
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
