@@ -4,8 +4,14 @@ version = "0.1.0"
 edition = "2021"
 description = "A gaming operating system kernel"
 
+[[bin]]
+name = "os_gaming"
+test = false
+bench = false
+
 [lib]
-path = "src/lib.rs"  # Ensure this file exists
+name = "os_gaming"
+path = "src/lib.rs"
 
 [dependencies]
 spin = "0.10.0"

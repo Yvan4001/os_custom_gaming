@@ -23,7 +23,6 @@ unsafe fn pci_read_config_u8(bus: u8, device: u8, function: u8, offset: u8) -> u
     let mut data_port = x86_64::instructions::port::Port::new(0xCFC + (offset & 3) as u16);
     data_port.read()
 }
-
 unsafe fn pci_read_config_u16(bus: u8, device: u8, function: u8, offset: u8) -> u16 {
     let low = pci_read_config_u8(bus, device, function, offset);
     let high = pci_read_config_u8(bus, device, function, offset + 1);

@@ -2,16 +2,26 @@
 //! 
 //! Handles physical memory allocation and tracking
 
+use alloc::vec::Vec;
 use core::sync::atomic::{AtomicUsize, Ordering};
 use spin::Mutex;
 use lazy_static::lazy_static;
 use x86_64::{PhysAddr, VirtAddr};
 use x86_64::structures::paging::{Translate, RecursivePageTable};
 use bit_field::BitArray;
+use x86_64::{
+    structures::paging::{OffsetPageTable, PageTable},
+};
+use crate::kernel::memory::MemoryManager;
+use super::memory_init;
+
+
 
 #[cfg(not(feature = "std"))]
-use bootloader::bootinfo::{MemoryMap, MemoryRegionType};
+use bootloader::bootinfo::{BootInfo, MemoryRegion, MemoryRegionType};
+use bootloader::bootinfo::MemoryMap;
 use crate::kernel::memory::memory_manager::current_page_table;
+
 
 /// Size of a page (4KB)
 pub const PAGE_SIZE: usize = 4096;
@@ -38,36 +48,127 @@ impl FrameBitmap {
     
     /// Initialize the bitmap from a memory map
     #[cfg(not(feature = "std"))]
+    /// Initialize the frame bitmap using the memory map
     pub fn init(&mut self, memory_map: &'static MemoryMap) {
-        // Calculate total memory size
-        let mut max_frame = 0;
-        
-        // Mark all frames as used initially
-        for i in 0..self.bitmap.len() {
-            self.bitmap[i] = !0; // All bits set to 1 (used)
-        }
-        
-        // Process memory regions
+        // Clear the bitmap first
+        self.bitmap.fill(0);
+        self.total_frames = 0;
+
+        // Calculate total memory and frames from usable regions
         for region in memory_map.iter() {
-            let start_frame = region.range.start_addr() / PAGE_SIZE as u64;
-            let end_frame = region.range.end_addr() / PAGE_SIZE as u64;
-            
-            if end_frame > max_frame {
-                max_frame = end_frame;
-            }
-            
-            // If region is usable, mark frames as free
             if region.region_type == MemoryRegionType::Usable {
+                let start_frame = region.range.start_addr() / PAGE_SIZE as u64;
+                let end_frame = region.range.end_addr() / PAGE_SIZE as u64;
+                let frames_in_region = (end_frame - start_frame) as usize;
+                self.total_frames += frames_in_region;
+            }
+        }
+
+        // Initialize all frames as used (1)
+        for byte in self.bitmap.iter_mut() {
+            *byte = !0; // Set all bits to 1
+        }
+
+        // Mark usable regions as free (0)
+        for region in memory_map.iter() {
+            if region.region_type == MemoryRegionType::Usable {
+                let start_frame = region.range.start_addr() / PAGE_SIZE as u64;
+                let end_frame = region.range.end_addr() / PAGE_SIZE as u64;
+
                 for frame in start_frame..end_frame {
                     self.set_frame(frame as usize, false);
                 }
             }
         }
-        
-        self.total_frames = max_frame as usize;
-        self.free_frames = AtomicUsize::new(self.count_free());
+
+        // Initialize free frames count
+        self.free_frames.store(self.total_frames, Ordering::SeqCst);
     }
-    
+
+    /// Initialize frame allocator from memory regions
+    pub fn init_with_regions(
+        memory_regions: impl Iterator<Item = &'static MemoryRegion>,
+        phys_mem_offset: VirtAddr,
+    ) -> Result<(), &'static str> {
+        let pmm = get_physical_memory_manager();
+
+        // Collect memory regions into a Vec so we can iterate multiple times
+        let regions: Vec<_> = memory_regions.collect();
+
+        // Calculate total usable memory
+        let mut total_memory = 0;
+        for region in regions.iter() {
+            if region.region_type == MemoryRegionType::Usable {
+                total_memory += region.range.end_addr() - region.range.start_addr();
+            }
+        }
+
+        pmm.total_memory.store(total_memory as usize, Ordering::SeqCst);
+
+        // Initialize frame bitmap with usable regions
+        let mut bitmap = pmm.frame_bitmap.lock();
+        for region in regions.iter() {
+            if region.region_type == MemoryRegionType::Usable {
+                let start_frame = region.range.start_addr() / PAGE_SIZE as u64;
+                let end_frame = region.range.end_addr() / PAGE_SIZE as u64;
+
+                for frame in start_frame..end_frame {
+                    bitmap.set_frame(frame as usize, false);
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Initialize the frame allocator with memory ranges and kernel boundaries
+    pub fn init_frame_allocator(&mut self,
+                                memory_ranges: impl Iterator<Item = core::ops::Range<u64>>,
+                                kernel_start: PhysAddr,
+                                kernel_end: PhysAddr
+    ) {
+        // Clear the bitmap first
+        self.bitmap.fill(0);
+        self.total_frames = 0;
+
+        // Mark all frames as used initially
+        for word in self.bitmap.iter_mut() {
+            *word = !0; // All bits set to 1
+        }
+
+        // Mark usable ranges as free
+        for range in memory_ranges {
+            let start_frame = (range.start / PAGE_SIZE as u64) as usize;
+            let end_frame = (range.end / PAGE_SIZE as u64) as usize;
+
+            for frame in start_frame..end_frame {
+                self.set_frame(frame, false);
+                self.total_frames += 1;
+            }
+        }
+
+        // Mark kernel frames as used
+        let kernel_start_frame = (kernel_start.as_u64() / PAGE_SIZE as u64) as usize;
+        let kernel_end_frame = ((kernel_end.as_u64() + PAGE_SIZE as u64 - 1) / PAGE_SIZE as u64) as usize;
+
+        for frame in kernel_start_frame..kernel_end_frame {
+            self.set_frame(frame, true);
+        }
+
+        // Initialize free frames count
+        let used_frames = self.count_used_frames();
+        self.free_frames.store(self.total_frames - used_frames, Ordering::SeqCst);
+    }
+
+    /// Count the number of used frames in the bitmap
+    fn count_used_frames(&self) -> usize {
+        self.bitmap.iter()
+            .map(|word| word.count_ones() as usize)
+            .sum()
+    }
+
+
+
     /// Set a frame as used or free
     pub fn set_frame(&mut self, frame: usize, used: bool) {
         let idx = frame / 64;
@@ -313,21 +414,91 @@ lazy_static! {
     static ref PHYSICAL_MEMORY_MANAGER: PhysicalMemoryManager = PhysicalMemoryManager::new();
 }
 
-/// Initialize physical memory management
-#[cfg(not(feature = "std"))]
-pub fn init() -> Result<(), &'static str> {
-    // This would typically use information from the bootloader
-    use bootloader::bootinfo::BootInfo;
-    
-    // TODO: Get memory map from bootloader
-    // let boot_info: &'static BootInfo = ...;
-    // let memory_map = &boot_info.memory_map;
-    
-    // For now, create a dummy memory map
-    // PHYSICAL_MEMORY_MANAGER.init(memory_map, kernel_start, kernel_end);
+/// Initialize memory management using bootloader information
+pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
+    log::info!("Initializing memory subsystem...");
+
+    // Create memory manager instance
+    let mut memory_manager = MemoryManager::new();
+
+    // Get the physical memory offset
+    let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+
+    // Initialize memory regions from bootloader info
+    let memory_regions = boot_info.memory_map.iter()
+        .filter(|region| region.region_type == MemoryRegionType::Usable);
+
+    // Initialize physical memory management
+    FrameBitmap::init_with_regions(memory_regions, phys_mem_offset)?;
     
     Ok(())
 }
+
+
+/// Creates the page tables using the physical memory offset
+unsafe fn create_page_tables(phys_mem_offset: VirtAddr) -> Result<OffsetPageTable<'static>, &'static str> {
+    let level_4_table = active_level_4_table(phys_mem_offset);
+    Ok(OffsetPageTable::new(level_4_table, phys_mem_offset))
+}
+
+/// Returns a mutable reference to the active level 4 page table
+unsafe fn active_level_4_table(phys_mem_offset: VirtAddr) -> &'static mut PageTable {
+    use x86_64::registers::control::Cr3;
+
+    let (level_4_table_frame, _) = Cr3::read();
+    let phys = level_4_table_frame.start_address();
+    let virt = phys_mem_offset + phys.as_u64();
+    let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
+
+    &mut *page_table_ptr
+}
+
+/// Initialize the frame allocator with the memory map
+/// Initialize the frame allocator with the memory map
+fn init_frame_allocator(
+    memory_map: &'static MemoryMap,
+    kernel_start: PhysAddr,
+    kernel_end: PhysAddr,
+) -> Result<(), &'static str> {
+    // Convert memory regions into ranges
+    let usable_ranges = memory_map
+        .iter()
+        .filter(|r| r.region_type == MemoryRegionType::Usable)
+        .map(|r| r.range.start_addr()..r.range.end_addr());
+
+    // Initialize the frame bitmap with the ranges
+    with_frame_bitmap_mut(|bitmap| {
+        bitmap.init_frame_allocator(usable_ranges, kernel_start, kernel_end)
+    })?;
+
+    Ok(())
+}
+
+
+/// Get mutable reference to the frame bitmap
+fn with_frame_bitmap_mut<F, R>(f: F) -> Result<R, &'static str>
+where
+    F: FnOnce(&mut FrameBitmap) -> R,
+{
+    let pmm = get_physical_memory_manager();
+    let mut bitmap = pmm.frame_bitmap.lock();
+    Ok(f(&mut *bitmap))
+}
+
+
+#[cfg(debug_assertions)]
+fn print_memory_map(memory_map: &'static MemoryMap) {
+    log::debug!("Memory map:");
+    for region in memory_map.iter() {
+        log::debug!(
+            "  {:#x}-{:#x} {:?}",
+            region.range.start_addr(),
+            region.range.end_addr(),
+            region.region_type
+        );
+    }
+}
+
 
 #[cfg(feature = "std")]
 pub fn init(multiboot_info_addr: usize) -> Result<(), &'static str> {

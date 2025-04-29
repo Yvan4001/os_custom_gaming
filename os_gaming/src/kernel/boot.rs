@@ -5,6 +5,8 @@ use lazy_static::lazy_static;
 use spin::Mutex;
 extern crate alloc;
 use alloc::string::String;
+use bootloader::BootInfo;
+use crate::kernel::memory::MemoryManager;
 
 use crate::println;
 
@@ -37,6 +39,7 @@ pub struct BootConfig {
     pub display_height: Option<u32>,
     /// Initial display refresh rate
     pub refresh_rate: Option<u32>,
+    pub boot_info: Option<&'static BootInfo>,
 }
 
 impl Default for BootConfig {
@@ -47,6 +50,7 @@ impl Default for BootConfig {
             display_width: Some(1920),
             display_height: Some(1080),
             refresh_rate: Some(60),
+            boot_info: None,
         }
     }
 }
@@ -63,30 +67,35 @@ pub fn get_boot_status() -> BootStatus {
 
 /// Set boot status
 fn set_boot_status(status: BootStatus) {
-    #[cfg(feature = "std")]
-    match status {
-        BootStatus::NotStarted => log::info!("Boot process starting"),
-        BootStatus::CPUInitializing => log::info!("Initializing CPU"),
-        BootStatus::MemoryInitializing => log::info!("Initializing memory subsystem"),
-        BootStatus::DisplayInitializing => log::info!("Initializing display subsystem"),
-        BootStatus::StorageInitializing => log::info!("Initializing storage subsystem"),
-        BootStatus::InputInitializing => log::info!("Initializing input devices"),
-        BootStatus::NetworkInitializing => log::info!("Initializing network subsystem"),
-        BootStatus::SoundInitializing => log::info!("Initializing sound subsystem"),
-        BootStatus::FilesystemInitializing => log::info!("Initializing filesystem"),
-        BootStatus::PowerInitializing => log::info!("Initializing power management"),
-        BootStatus::BootCompleted => log::info!("Boot process completed successfully"),
-        BootStatus::Failed(code) => log::error!("Boot process failed with error code: {}", code),
-    }
-    
     *BOOT_STATUS.lock() = status;
+
+    #[cfg(not(feature = "std"))]
+    match status {
+        BootStatus::NotStarted => println!("Boot process starting"),
+        BootStatus::CPUInitializing => println!("Initializing CPU"),
+        BootStatus::MemoryInitializing => println!("Initializing memory subsystem"),
+        BootStatus::BootCompleted => println!("Boot process completed successfully"),
+        BootStatus::Failed(code) => println!("Boot process failed with error code: {}", code),
+        _ => {}
+    }
 }
 
+
 /// Initialize the kernel and set up required subsystems
-pub fn init(config: &Config) -> Result<(), &'static str> {
-    let boot_config = BootConfig::default();
-    return internal_init(boot_config);
+pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
+    let mut boot_config = BootConfig::default();
+    boot_config.boot_info = Some(boot_info);
+
+    // Set default display settings
+    let config = Config::default();
+    boot_config.display_width = Some(config.width);
+    boot_config.display_height = Some(config.height);
+    boot_config.refresh_rate = Some(config.refresh_rate);
+
+    internal_init(boot_config)
 }
+
+
 
 /// Internal initialization function that works with BootConfig
 pub fn internal_init(config: BootConfig) -> Result<(), &'static str> {
@@ -95,11 +104,15 @@ pub fn internal_init(config: BootConfig) -> Result<(), &'static str> {
     // 1. CPU Initialization and feature detection
     set_boot_status(BootStatus::CPUInitializing);
     cpu_init()?;
-    
+
     // 2. Memory management initialization
     set_boot_status(BootStatus::MemoryInitializing);
-    memory_init(config.memory_map)?;
-    
+    if let Some(boot_info) = config.boot_info {
+        memory_init(boot_info)?;
+    } else {
+        return Err("No boot information available for memory initialization");
+    }
+
     // 3. Display/HDMI initialization
     set_boot_status(BootStatus::DisplayInitializing);
     display_init(&config)?;
@@ -144,91 +157,27 @@ pub fn internal_init(config: BootConfig) -> Result<(), &'static str> {
 }
 
 /// Initialize CPU features and optimizations
+/// Initialize CPU features
 fn cpu_init() -> Result<(), &'static str> {
-    // CPU feature detection
-    #[cfg(feature = "std")]
-    {
-        // Use raw-cpuid crate to detect CPU features
-        let cpuid = raw_cpuid::CpuId::new();
-        
-        if let Some(vendor_info) = cpuid.get_vendor_info() {
-            log::info!("CPU Vendor: {}", vendor_info.as_str());
-        }
-        
-        if let Some(processor_brand) = cpuid.get_processor_brand_string() {
-            log::info!("CPU Model: {}", processor_brand.as_str());
-        }
-        
-        // Check for important features for gaming
-        if let Some(feature_info) = cpuid.get_feature_info() {
-            let has_avx2 = cpuid.get_extended_feature_info()
-                .map_or(false, |info| info.has_avx2());
-                
-            log::info!("CPU Features: SSE: {}, SSE2: {}, SSE3: {}, SSE4.1: {}, SSE4.2: {}, AVX: {}, AVX2: {}",
-                feature_info.has_sse(),
-                feature_info.has_sse2(),
-                feature_info.has_sse3(),
-                feature_info.has_sse41(),
-                feature_info.has_sse42(),
-                feature_info.has_avx(),
-                has_avx2);
-        }
-        
-        // Log physical cores and threads
-        log::info!("CPU has {} physical cores, {} logical processors", 
-            num_cpus::get_physical(),
-            num_cpus::get());
-    }
-    
+    // Basic CPU initialization
     #[cfg(not(feature = "std"))]
     {
-        // In bare metal mode, we can directly read CPU registers
-        use x86_64::registers::model_specific::Msr;
-        
-        // Initialize CPU model-specific registers for optimal gaming performance
-        unsafe {
-            // This would be expanded with actual optimizations for gaming
-            // Example: setting power management MSRs for high performance
-        }
+        use x86_64::instructions;
+        instructions::interrupts::disable();
+        // Add any other CPU initialization here
     }
-    
+
     Ok(())
 }
 
+
 /// Initialize memory management
-fn memory_init(memory_map: Option<&'static [u8]>) -> Result<(), &'static str> {
-    #[cfg(feature = "std")]
-    {
-        // In std mode, just log system memory info
-        let mut sys = sysinfo::System::new();
-        sys.refresh_memory();
-        
-        let total_memory_mb = sys.total_memory() / 1024;
-        let used_memory_mb = sys.used_memory() / 1024;
-        let free_memory_mb = total_memory_mb - used_memory_mb;
-        
-        log::info!("Memory: {}/{} MB free ({} MB used)", 
-            free_memory_mb, total_memory_mb, used_memory_mb);
-    }
-    
-    #[cfg(not(feature = "std"))]
-    {
-        // In OS mode, we would initialize:
-        // 1. Physical memory manager
-        // 2. Virtual memory mappings
-        // 3. Kernel heap allocator
-        
-        if let Some(map_data) = memory_map {
-            // Parse the memory map provided by bootloader
-            // (implementation would depend on your bootloader)
-        }
-        
-        // Initialize memory management systems
-        // (This is a placeholder for your actual memory initialization code)
-    }
-    
+fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
+    // Initialize memory manager
+    MemoryManager::init(boot_info)?;
     Ok(())
 }
+
 
 /// Initialize display subsystem
 fn display_init(config: &BootConfig) -> Result<(), &'static str> {
@@ -403,16 +352,12 @@ fn power_init() -> Result<(), &'static str> {
     Ok(())
 }
 
-/// Panic handler for kernel boot errors
+/// Panic handler for boot errors
 #[cfg(not(feature = "std"))]
-fn panic(info: &core::panic::PanicInfo) -> ! {
+pub fn boot_panic(info: &core::panic::PanicInfo) -> ! {
     println!("Kernel panic during boot: {}", info);
-    
-    // Set boot status to failed
     set_boot_status(BootStatus::Failed(0xDEAD));
-    
     loop {
-        // Halt CPU or wait for reset
-        core::hint::spin_loop();
+        x86_64::instructions::hlt();
     }
 }

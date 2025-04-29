@@ -17,6 +17,7 @@ use crate::kernel::drivers::filesystem::{FilesystemManager};
 use crate::kernel::{self, drivers, interrupts, memory};
 use bincode::{Decode, Encode};
 use alloc::boxed::Box;
+use bootloader::BootInfo;
 
 /// System state flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -181,7 +182,7 @@ impl System {
     }
 
     /// Initialize the system
-    pub fn init(&mut self) -> Result<(), &'static str> {
+    pub fn init(&mut self, boot_info: &'static BootInfo) -> Result<(), &'static str> {
         // Set initializing state
         *self.state.lock() = SystemState::Initializing;
 
@@ -196,10 +197,11 @@ impl System {
 
         // 1. Initialize memory management first
         log::info!("Initializing memory management...");
-        memory::init().map_err(|e| {
+        memory::init(boot_info).map_err(|e| {
             log::error!("Memory initialization failed: {}", e);
             "Memory initialization failed"
         })?;
+
 
         // 2. Initialize interrupt handling
         log::info!("Initializing interrupt handling...");
@@ -675,10 +677,11 @@ pub fn get_system() -> &'static Mutex<System> {
 }
 
 /// Initialize the system
-pub fn init() -> Result<(), &'static str> {
+pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
     let mut system = SYSTEM.lock();
-    system.init()
+    system.init(boot_info)
 }
+
 
 /// Start the system main loop
 pub fn run() -> ! {

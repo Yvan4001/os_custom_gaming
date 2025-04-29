@@ -5,6 +5,7 @@ pub mod interrupts;
 pub mod drivers;
 pub mod boot;
 
+use bootloader::BootInfo;
 // Re-export important items
 pub use cpu::init as cpu_init;
 pub use memory::memory_init;
@@ -12,17 +13,24 @@ pub use interrupts::init as interrupts_init;
 use crate::println;
 
 // Kernel initialization function
-pub fn init() {
-    // Initialize kernel components
-    cpu_init();
-    memory_init(0);
-    interrupts_init();
+pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
     
-    // Initialize drivers
+    // Initialize cpu
+    cpu_init();
+    // Initialize memory management subsystem
+    memory::memory_init(boot_info)?;
+    
+    // Interrupt Init
+    interrupts::init();
+    
+    // Initialize driver
     drivers::init();
     
-    println!("Kernel initialized successfully");
+    println!("Kernel initialized successfully!");
+
+    Ok(())
 }
+
 
 // Kernel panic handler
 #[cfg(not(test))]

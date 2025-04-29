@@ -2,6 +2,8 @@
 // #![cfg_attr(not(feature = "std"), no_main)] // Supprimer, entry_point! s'en charge
 #![feature(abi_x86_interrupt)]
 #![no_std]
+#![cfg_attr(test, no_main)]
+#![allow(warnings)]
 
 // Imports conditionnels pour std
 #[cfg(feature = "std")]
@@ -87,51 +89,43 @@ impl Default for Config {
     }
 }
 
-// Initialization function for the system
-pub fn init() -> Result<Config, &'static str> {
-    #[cfg(feature = "std")]
-    log::info!("Initializing OS Gaming v{}", VERSION);
-
-    let config = Config::default();
-
-    kernel::boot::init(&config);
-
-    Ok(config)
-}
-
 #[cfg(not(feature = "std"))]
-pub fn kernel_main(_boot_info: &'static BootInfo) -> ! {
-    // Initialisation du logger
+pub fn kernel_main(boot_info: &'static BootInfo) -> ! {
+    // Initialize logger
     logger::init().expect("Logger initialization failed");
     info!("Starting OS Gaming...");
 
-    // Initialisation du kernel
+    // Initialize kernel
     info!("Init Kernel...");
-    match init_kernel() {
+    match init_kernel(boot_info) {
         Ok(_) => info!("Kernel successfully initialized"),
         Err(e) => {
             error!("Error when Kernel initialize: {:?}", e);
-            loop {}
+            hcf();
         }
     }
 
-    // Initialisation du GUI
+    // Initialize GUI
     info!("Init GUI...");
     match init_gui() {
         Ok(_) => info!("GUI successfully initialized"),
         Err(e) => {
             error!("Error when GUI initialize: {:?}", e);
-            loop {}
+            hcf();
         }
     }
 
-    loop {}
+    loop {
+        x86_64::instructions::hlt();
+    }
 }
 
-fn init_kernel() -> Result<(), &'static str> {
-    kernel::init();
+
+fn init_kernel(boot_info: &'static BootInfo) -> Result<(), &'static str> {
+    kernel::boot::init(boot_info)?;
     Ok(())
 }
+
 
 fn init_gui() -> Result<(), &'static str> {
     gui::init_gui(Default::default());

@@ -13,7 +13,8 @@ mod allocator;
 use spin::Mutex;
 use lazy_static::lazy_static;
 use x86_64::structures::paging::{FrameAllocator, Mapper, PageSize, PageTableFlags};
-use memory_manager::{MemoryError, MemoryManager, PhysicalMemoryManager};
+pub(crate) use memory_manager::{MemoryError, MemoryManager, PhysicalMemoryManager};
+use bootloader::BootInfo;
 use crate::kernel::memory::r#virtual::VirtualMemoryManager;
 
 // Create thread-safe static reference to the memory manager
@@ -22,21 +23,22 @@ lazy_static! {
 }
 
 /// Initialize memory management subsystem
-pub fn memory_init(multiboot_info_addr: usize) -> Result<(), &'static str> {
+pub fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
     // Initialize the physical memory manager first
-    physical::init()?;
-    
+    physical::init(boot_info)?;
+
     // Initialize the kernel heap allocator
     allocator::init(0)?;
-    
+
     // Initialize the virtual memory manager (paging)
     r#virtual::init(32)?;
-    
+
     // Initialize DMA support for devices
     dma::init()?;
-    
+
     Ok(())
 }
+
 
 pub fn deallocate_virtual(ptr: *mut u8) {
     let mut manager = MEMORY_MANAGER.lock();
@@ -84,15 +86,15 @@ pub struct MemoryStats {
     pub kernel_heap_used: usize, // Kernel heap usage in bytes
 }
 
-pub fn init() -> Result<(), &'static str> {
-    // Initialize the memory management subsystem
-    memory_init(0)?;
-    
+pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
+    // Initialize the memory management subsystem with boot info
+    memory_init(boot_info)?;
+
     // Initialize the memory manager
     let _ = MEMORY_MANAGER.lock();
-    
-    // Call the init function directly
-    memory_manager::MemoryManager::init()?;
-    
+
+    // Call the init function with boot info
+    memory_manager::MemoryManager::init(boot_info)?;
+
     Ok(())
 }

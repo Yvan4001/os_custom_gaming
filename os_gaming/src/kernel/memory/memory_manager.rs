@@ -7,7 +7,6 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::registers::control::Cr3;
-use x86_64::{PhysAddr, VirtAddr};
 
 use crate::kernel::memory::physical;
 #[cfg(not(feature = "std"))]
@@ -17,13 +16,23 @@ use crate::kernel::memory::r#virtual::free;
 use crate::kernel::memory::dma;
 use crate::kernel::memory::allocator;
 #[cfg(not(feature = "std"))]
-use x86_64::structures::paging::{PageTable, PhysFrame, Size4KiB};
-use x86_64::structures::paging::{PageSize, PageTableFlags};
-use x86_64::structures::paging::Page;
-use x86_64::structures::paging::mapper::MapToError;
-use x86_64::structures::paging::Mapper;
-use x86_64::structures::paging::FrameAllocator;
+use x86_64::{
+    structures::paging::{
+        FrameAllocator, Mapper, Page, PageTable, PhysFrame, Size4KiB,
+        OffsetPageTable, PageTableFlags
+    },
+    VirtAddr, PhysAddr,
+};
+use x86_64::structures::paging::mapper::TranslateError;
+use x86_64::structures::paging::page_table::PageTableEntry;
+
 use core::ptr::NonNull;
+use bootloader::BootInfo;
+use x86_64::structures::paging::mapper::MapToError;
+extern crate alloc;
+use alloc::string::String;
+use crate::kernel::memory::physical::PAGE_SIZE;
+use x86_64::structures::paging::mapper::MapperFlush;
 
 /// Memory management error types
 #[derive(Debug)]
@@ -38,6 +47,28 @@ pub enum MemoryError {
     NotMapped,
     InvalidRange,
 }
+
+#[derive(Debug)]
+pub enum MemoryInitError {
+    PageTableCreationFailed,
+    PhysicalMemoryInitFailed,
+    VirtualMemoryInitFailed,
+    HeapInitFailed,
+    DmaInitFailed,
+}
+
+impl From<MemoryInitError> for &'static str {
+    fn from(error: MemoryInitError) -> &'static str {
+        match error {
+            MemoryInitError::PageTableCreationFailed => "Failed to create page tables",
+            MemoryInitError::PhysicalMemoryInitFailed => "Failed to initialize physical memory",
+            MemoryInitError::VirtualMemoryInitFailed => "Failed to initialize virtual memory",
+            MemoryInitError::HeapInitFailed => "Failed to initialize heap",
+            MemoryInitError::DmaInitFailed => "Failed to initialize DMA",
+        }
+    }
+}
+
 
 /// Memory protection flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -79,6 +110,48 @@ lazy_static! {
     static ref INITIALIZED: AtomicBool = AtomicBool::new(false);
 }
 pub struct MemoryManager {}
+
+pub fn create_page_mapping(
+    page: Page<Size4KiB>,
+    frame: PhysFrame<Size4KiB>,
+    flags: PageTableFlags,
+    mapper: &mut OffsetPageTable,
+    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+) -> Result<(), &'static str> {
+    // Check if the page is already mapped
+    if let Ok(mapped_frame) = mapper.translate_page(page) {
+        if mapped_frame == frame {
+            // If the page is already mapped to the same frame, return success
+            return Ok(());
+        } else {
+            // If the page is mapped to a different frame, return an error
+            return Err("Page already mapped to a different frame");
+        }
+    }
+
+    // Attempt to map the page to the frame
+    unsafe {
+        match mapper.map_to(page, frame, flags, frame_allocator) {
+            Ok(flush) => {
+                flush.flush(); // Ensure the mapping is flushed
+                Ok(())
+            }
+            Err(MapToError::PageAlreadyMapped(existing_frame)) => {
+                // Handle the case where the page is already mapped
+                if existing_frame == frame {
+                    // If it's mapped to the same frame, return success
+                    Ok(())
+                } else {
+                    // Otherwise, return an error
+                    Err("Page already mapped to a different frame")
+                }
+            }
+            Err(MapToError::FrameAllocationFailed) => Err("Failed to allocate frame"),
+            Err(MapToError::ParentEntryHugePage) => Err("Parent entry is a huge page"),
+            _ => Err("Invalid mapping"),
+        }
+    }
+}
 
 impl MemoryManager {
     /// Create a new memory manager instance
@@ -171,7 +244,23 @@ impl MemoryManager {
             kernel_heap_used: 0,
         }
     }
-    pub fn init() -> Result<(), &'static str> {
+    unsafe fn active_level_4_table(phys_mem_offset: VirtAddr) -> &'static mut PageTable {
+        use x86_64::registers::control::Cr3;
+
+        let (level_4_table_frame, _) = Cr3::read();
+        let phys = level_4_table_frame.start_address();
+        let virt = phys_mem_offset + phys.as_u64();
+        let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
+
+        &mut *page_table_ptr
+    }
+
+    unsafe fn create_page_tables(phys_mem_offset: VirtAddr) -> Result<OffsetPageTable<'static>, &'static str> {
+        let level_4_table = Self::active_level_4_table(phys_mem_offset);
+        Ok(OffsetPageTable::new(level_4_table, phys_mem_offset))
+    }
+
+    pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
         log::info!("Initializing Memory Manager...");
         if INITIALIZED.load(Ordering::SeqCst) {
             return Ok(());
@@ -179,14 +268,21 @@ impl MemoryManager {
 
         #[cfg(not(feature = "std"))]
         {
+            // Get the physical memory offset
+            let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+
             // Initialize physical memory management first
-            physical::init()?;
+            physical::init(boot_info)?;
+
+            // Create page tables
+            let mut page_tables = unsafe { Self::create_page_tables(phys_mem_offset)? };
 
             // Initialize virtual memory management
-            r#virtual::init(32)?;
+            r#virtual::init(4096)?;
 
             // Set up the kernel heap
-            allocator::init_heap().map_err(|_| MemoryError::AllocationFailed); // Assuming init_heap returns Result<(), MapToError>
+            allocator::init_heap()
+                .map_err(|_| "Failed to initialize kernel heap")?;
             log::info!("Kernel heap initialized.");
 
             // Initialize DMA memory management
@@ -203,8 +299,9 @@ impl MemoryManager {
 
         Ok(())
     }
-}
 
+
+}
 /// Get the current page table
 #[cfg(not(feature = "std"))]
 pub fn current_page_table() -> &'static mut PageTable {

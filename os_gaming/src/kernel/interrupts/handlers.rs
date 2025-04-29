@@ -115,10 +115,24 @@ pub extern "x86-interrupt" fn page_fault_handler(
 ) {
     use x86_64::registers::control::Cr2;
 
+    let accessed_address = Cr2::read();
+    let present = error_code.contains(PageFaultErrorCode::PROTECTION_VIOLATION);
+    let write = error_code.contains(PageFaultErrorCode::CAUSED_BY_WRITE);
+    let user = error_code.contains(PageFaultErrorCode::USER_MODE);
+
     panic!(
-        "EXCEPTION: PAGE FAULT\nAccessed Address: {:?}\nError Code: {:?}\n{:#?}",
-        Cr2::read(),
+        "PAGE FAULT\n\
+        Accessed Address: {:?}\n\
+        Error Code: {:?}\n\
+        Present: {}\n\
+        Write: {}\n\
+        User Access: {}\n\
+        Stack Frame:\n{:#?}",
+        accessed_address,
         error_code,
+        present,
+        write,
+        user,
         stack_frame
     );
 }
