@@ -1,61 +1,42 @@
-#![cfg_attr(not(feature = "std"), no_std)]
-#![cfg_attr(not(feature = "std"), no_main)]
+#![cfg_attr(not(feature = "std"), no_std)] // Garder pour no_std
+// #![cfg_attr(not(feature = "std"), no_main)] // Supprimer, entry_point! s'en charge
 #![feature(abi_x86_interrupt)]
-// Set up proper imports for different environments
+#![no_std]
+
+// Imports conditionnels pour std
 #[cfg(feature = "std")]
-pub use std::boxed::Box;
+pub use std::{boxed::Box, string::String, vec::Vec};
 #[cfg(feature = "std")]
-pub use std::string::String;
-use crate::alloc::string::ToString;
-#[cfg(feature = "std")]
-pub use std::vec::Vec;
+use toml; // Garder si utilisé en std
 
-#[cfg(not(feature = "std"))]
-pub use alloc::boxed::Box;
-#[cfg(not(feature = "std"))]
-pub use alloc::string::String;
-#[cfg(not(feature = "std"))]
-pub use alloc::vec::Vec;
-use core::arch::asm;
-use core::cmp::PartialEq;
-use core::result::Result::Ok;
-use core::result::Result;
-use core::marker::Copy;
-use core::ops::FnOnce;
-use core::option::Option;
-use alloc::sync::Arc;
-use core::assert_eq;
-use core::assert;
-use core::convert::From;
-
-
-
-unsafe extern "C" fn __stack_chk_fail() {
-    asm!("sti", options(nomem, nostack, preserves_flags));
-}
-
-#[cfg(feature = "std")]
-use toml;
-
-#[macro_use]
-extern crate core;
-
-// Import necessary components for no_std
-#[cfg(not(feature = "std"))]
+// Imports pour no_std (alloc requis)
 extern crate alloc;
-
 #[cfg(not(feature = "std"))]
-use core::panic::PanicInfo;
+pub use alloc::{boxed::Box, string::{String, ToString}, vec::Vec, sync::Arc}; // Combiner les imports alloc
 
-// Public modules
+// Imports Core communs
+use core::panic::PanicInfo;
+use core::arch::asm;
+use core::default::Default;
+use core::result::Result::{self, Ok, Err}; // Importer Result et ses variantes
+use core::clone::Clone;
+use core::marker::{Send, Sync, Copy};
+use core::cmp::PartialEq;
+use core::ops::FnOnce;
+use core::option::Option::{self, Some, None}; // Importer Option et ses variantes
+use core::mem::drop; // Garder si utilisé explicitement
+
+// Imports des crates externes
+use bootloader::{entry_point, BootInfo};
+use log::{info, error}; // Garder les imports log
+
+// Déclaration des modules locaux (supprimer la version conditionnelle de gui si non nécessaire)
 pub mod config;
-#[cfg(feature = "std")]
-pub mod gui;
 pub mod kernel;
-pub mod gui;
+pub mod gui; // Garder la version inconditionnelle si gui est toujours requis
 pub mod system;
 pub mod logger;
-
+// #[cfg(feature = "std")] // Supprimer si gui est toujours requis
 
 // System constants
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -119,11 +100,49 @@ pub fn init() -> Result<Config, &'static str> {
 }
 
 #[cfg(not(feature = "std"))]
-#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // Initialize your OS
-    let _ = init();
+pub fn kernel_main(_boot_info: &'static BootInfo) -> ! {
+    // Initialisation du logger
+    logger::init().expect("Logger initialization failed");
+    info!("Starting OS Gaming...");
 
-    // Main OS loop - never returns
+    // Initialisation du kernel
+    info!("Init Kernel...");
+    match init_kernel() {
+        Ok(_) => info!("Kernel successfully initialized"),
+        Err(e) => {
+            error!("Error when Kernel initialize: {:?}", e);
+            loop {}
+        }
+    }
+
+    // Initialisation du GUI
+    info!("Init GUI...");
+    match init_gui() {
+        Ok(_) => info!("GUI successfully initialized"),
+        Err(e) => {
+            error!("Error when GUI initialize: {:?}", e);
+            loop {}
+        }
+    }
+
     loop {}
 }
+
+fn init_kernel() -> Result<(), &'static str> {
+    kernel::init();
+    Ok(())
+}
+
+fn init_gui() -> Result<(), &'static str> {
+    gui::init_gui(Default::default());
+    Ok(())
+}
+
+// Fonction pour arrêter le CPU (Halt and Catch Fire)
+#[cfg(not(feature = "std"))]
+pub fn hcf() -> ! {
+    loop {
+        x86_64::instructions::hlt(); // Instruction pour arrêter le CPU jusqu'à la prochaine interruption
+    }
+}
+entry_point!(kernel_main);

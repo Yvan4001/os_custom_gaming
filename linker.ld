@@ -4,27 +4,24 @@ ENTRY(_start)
 SECTIONS {
     . = 1M;
 
-    .boot :
-    {
-        *(.multiboot_header)
-    }
+    /* Section .boot supprimée */
 
-    .text :
+    .text : ALIGN(4K) :
     {
         *(.text .text.*)
     }
 
-    .rodata :
+    .rodata : ALIGN(4K) :
     {
         *(.rodata .rodata.*)
     }
 
-    .data :
+    .data : ALIGN(4K) :
     {
         *(.data .data.*)
     }
 
-    .bss :
+    .bss : ALIGN(4K) :
     {
         *(.bss .bss.*)
     }

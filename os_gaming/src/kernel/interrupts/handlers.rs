@@ -91,8 +91,7 @@ pub extern  "x86-interrupt" fn spawn_task_handler(stack_frame: InterruptStackFra
 
 pub extern "x86-interrupt" fn spawn_task(
     stack_frame: InterruptStackFrame,
-    error_code: u64,
-    param: u64, // Add the parameter here
+    error_code: u64
 ) {
     panic!(
         "EXCEPTION: SPAWN TASK (error code: {})\n{:#?}",

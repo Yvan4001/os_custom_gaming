@@ -1,6 +1,6 @@
 [workspace]
 members = ["os_gaming"]
-resolver = "2"
+resolver = "1"
 
 # Keep profile settings if needed
 [profile.dev]

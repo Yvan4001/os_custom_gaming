@@ -5,12 +5,7 @@ edition = "2021"
 description = "A gaming operating system kernel"
 
 [lib]
-name = "os_gaming"
-path = "src/lib.rs"
-
-[[bin]]
-name = "main"
-path = "src/main.rs"
+path = "src/lib.rs"  # Ensure this file exists
 
 [dependencies]
 spin = "0.10.0"
@@ -23,20 +18,15 @@ raw-cpuid = "11.5.0"
 panic-abort = "0.3.2"
 libc = { version = "0.2.172", default-features = false }
 linked_list_allocator = "0.10.5"
-bootloader = { version = "0.9.23", features = ["map_physical_memory"] }
+bootloader = { version = "0.9.23", default-features = false, features = ["map_physical_memory"] }
 log = { version = "0.4.27", default-features = false }
 uart_16550 = "0.3.2"
 hashbrown = "0.14"
-embedded-graphics = { version = "0.8", default-features = false }
-micromath = "0.5.1"
+micromath = { version = "0.5.1", default-features = false }
 x86_64 = { version = "^0.15.2", features = ["abi_x86_interrupt"] }
+
 
 [features]
 default = ["no_std"]
 no_std = []
 
-[profile.dev]
-panic = "abort"
-
-[profile.release]
-panic = "abort"
