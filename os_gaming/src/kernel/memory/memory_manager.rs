@@ -46,6 +46,7 @@ pub enum MemoryError {
     AlreadyMapped,
     NotMapped,
     InvalidRange,
+    NoMemory,
 }
 
 #[derive(Debug)]
@@ -55,6 +56,29 @@ pub enum MemoryInitError {
     VirtualMemoryInitFailed,
     HeapInitFailed,
     DmaInitFailed,
+    FrameAllocationFailed,
+    MappingError(MapToError<Size4KiB>)
+}
+
+impl From<MapToError<Size4KiB>> for MemoryInitError {
+    fn from(error: MapToError<Size4KiB>) -> Self {
+        MemoryInitError::MappingError(error)
+    }
+}
+
+unsafe impl FrameAllocator<Size4KiB> for PhysicalMemoryManager {
+    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
+        let frame_addr = match self.allocate_frames(1) {
+            Some(addr) => addr,
+            None => {
+                log::error!("Failed to allocate frame");
+                return None;
+            }
+        };
+
+        // Créer et retourner un PhysFrame à partir de l'adresse
+        Some(PhysFrame::containing_address(frame_addr))
+    }
 }
 
 impl From<MemoryInitError> for &'static str {
@@ -65,6 +89,8 @@ impl From<MemoryInitError> for &'static str {
             MemoryInitError::VirtualMemoryInitFailed => "Failed to initialize virtual memory",
             MemoryInitError::HeapInitFailed => "Failed to initialize heap",
             MemoryInitError::DmaInitFailed => "Failed to initialize DMA",
+            MemoryInitError::FrameAllocationFailed => "Failed to allocate frame",
+            MemoryInitError::MappingError(_) => "Failed to map page",
         }
     }
 }
@@ -109,7 +135,11 @@ lazy_static! {
     /// Track if the memory system has been initialized
     static ref INITIALIZED: AtomicBool = AtomicBool::new(false);
 }
-pub struct MemoryManager {}
+pub struct MemoryManager {
+    mapper: Option<OffsetPageTable<'static>>,
+    frame_allocator: PhysicalMemoryManager,
+    initialized: AtomicBool,
+}
 
 pub fn create_page_mapping(
     page: Page<Size4KiB>,
@@ -156,7 +186,132 @@ pub fn create_page_mapping(
 impl MemoryManager {
     /// Create a new memory manager instance
     pub fn new() -> Self {
-        MemoryManager {}
+        MemoryManager {
+            mapper: None,
+            frame_allocator: PhysicalMemoryManager::new(),
+            initialized: AtomicBool::new(false),
+        }
+    }
+
+    /// Initialize the memory manager
+    pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
+        log::info!("Initialising the Memory Manager...");
+        if INITIALIZED.load(Ordering::SeqCst) {
+            return Ok(());
+        }
+
+        #[cfg(not(feature = "std"))]
+        {
+            // Get the physical memory offset
+            let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
+
+            // Initialize physical memory management first
+            unsafe {
+                physical::init_frame_allocator(
+                    &boot_info.memory_map,
+                    PhysAddr::new(boot_info.physical_memory_offset),
+                    PhysAddr::new(0) // Use the actual kernel addresses when available
+                )?;
+            }
+
+            // Create page tables after physical memory initialization
+            let page_tables = unsafe { Self::create_page_tables(phys_mem_offset)? };
+            let mut instance = Self::new();
+            instance.mapper = Some(page_tables);
+
+            // Initialize virtual memory management with the page tables
+            r#virtual::init(4096)?;
+
+            // Configure the kernel heap once virtual memory is ready
+            allocator::init_heap()
+                .map_err(|_| "Failed to initialize kernel heap")?;
+            log::info!("Kernel heap initialized.");
+
+            // Initialize DMA memory management last
+            dma::init()?;
+        }
+
+        INITIALIZED.store(true, Ordering::SeqCst);
+
+        #[cfg(feature = "std")]
+        log::info!("Memory management initialized (simulated mode)");
+
+        #[cfg(not(feature = "std"))]
+        log::info!("Memory management initialized");
+
+        Ok(())
+    }
+
+    fn map_page(&mut self, page: Page, frame: PhysFrame, flags: PageTableFlags) -> Result<(), &'static str> {
+        // Check if the page is already mapped
+        if self.is_page_mapped(page) {
+            // If the page is already mapped to the same frame, it's OK
+            if self.get_frame_for_page(page) == Some(frame) {
+                return Ok(());
+            }
+            // Otherwise, it's an error
+            return Err("Page already mapped to a different frame");
+        }
+
+        // Map the page normally
+        unsafe {
+            self.mapper
+                .as_mut()
+                .expect("Map is not initialized")
+                .map_to(page, frame, flags, &mut self.frame_allocator)
+                .map_err(|_| "Échec de mappage de page")?
+                .flush();
+        }
+
+        Ok(())
+    }
+
+    fn is_page_mapped(&self, page: Page) -> bool {
+        unsafe {
+            self.mapper
+                .as_ref()
+                .expect("Map is not initialized")
+                .translate_page(page)
+                .is_ok() // Converts Result to bool (true if Ok, false if Err)
+        }
+    }
+
+    fn get_frame_for_page(&self, page: Page) -> Option<PhysFrame> {
+        unsafe {
+            self.mapper
+                .as_ref()
+                .expect("Map is not initialized")
+                .translate_page(page)
+                .ok() // Converts Result<PhysFrame, TranslateError> to Option<PhysFrame>
+        }
+    }
+
+    fn map_page_to_frame(&mut self, page: Page, frame: PhysFrame, flags: PageTableFlags) -> Result<(), &'static str> {
+        unsafe {
+            self.mapper
+                .as_mut()
+                .expect("Mapper not initialized")
+                .map_to(page, frame, flags, &mut self.frame_allocator)
+                .map_err(|_| "Failed to map the page")?
+                .flush();
+        }
+        Ok(())
+    }
+
+    unsafe fn active_level_4_table(phys_mem_offset: VirtAddr) -> &'static mut PageTable {
+        use x86_64::registers::control::Cr3;
+
+        let (level_4_table_frame, _) = Cr3::read();
+        let phys = level_4_table_frame.start_address();
+        let virt = phys_mem_offset + phys.as_u64();
+        let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
+
+        &mut *page_table_ptr
+    }
+
+    unsafe fn create_page_tables(phys_mem_offset: VirtAddr) -> Result<OffsetPageTable<'static>, &'static str> {
+        let level_4_table = Self::active_level_4_table(phys_mem_offset);
+        Ok(OffsetPageTable::new(level_4_table, phys_mem_offset))
     }
 
     /// Allocate memory with the specified size and alignment
@@ -179,22 +334,20 @@ impl MemoryManager {
         unsafe { free(virt_addr, size) }
     }
 
-
     /// Free previously allocated memory
     pub fn free(&mut self, ptr: *mut u8, size: usize) -> Result<(), MemoryError> {
         if ptr.is_null() {
-            return Ok(());  // Ou retourner une erreur appropriée
+            return Ok(());
         }
 
         let addr = VirtAddr::new(ptr as u64);
         free(addr, size)
     }
 
-
-    /// Map physical memory to virtual address space
+    /// Maps a physical address to a virtual address
     pub fn map_physical(
         &mut self,
-        physical_address: PhysicalMemoryManager,
+        physical_address: PhysAddr,
         size: usize,
         flags: PageTableFlags,
         mapper: &mut impl Mapper<Size4KiB>,
@@ -220,18 +373,45 @@ impl MemoryManager {
             let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
             unsafe {
+                if let Ok(existing_mapping) = mapper.translate_page(page) {
+                    if let Some(existing_entry) = existing_mapping {
+                        if existing_entry.frame() == Ok(frame) && existing_entry.flags() == flags {
+                            log::info!("Page {:?} already correctly mapped, skipping.", page);
+                            continue;
+                        } else {
+                            log::warn!("Page {:?} already mapped with different parameters, consider unmapping first.", page);
+                            return Err(MemoryError::AlreadyMapped); // Or handle differently
+                        }
+                    }
+                }
                 match mapper.map_to(page, frame, flags, frame_allocator) {
-                    Ok(flush) => flush.flush(),
-                    Err(MapToError::FrameAllocationFailed) => return Err(MemoryError::OutOfMemory),
-                    Err(MapToError::ParentEntryHugePage) => return Err(MemoryError::InvalidMapping),
-                    Err(MapToError::PageAlreadyMapped(_)) => return Err(MemoryError::AlreadyMapped),
-                    _ => return Err(MemoryError::InvalidMapping),
+                    Ok(flush) => {
+                        flush.flush();
+                    }
+                    Err(MapToError::FrameAllocationFailed) => {
+                        return Err(MemoryError::OutOfMemory);
+                    }
+                    Err(MapToError::ParentEntryHugePage) => {
+                        return Err(MemoryError::InvalidMapping);
+                    }
+                    Err(MapToError::PageAlreadyMapped(existing_frame)) => {
+                        if existing_frame == frame {
+                            log::info!("Page {:?} already mapped to the same frame, skipping (though map_to reported it).", page);
+                            continue;
+                        } else {
+                            log::error!("Page {:?} already mapped to a different frame...", page);
+                            return Err(MemoryError::AlreadyMapped);
+                        }
+                    }
+                    _ => {
+                        return Err(MemoryError::InvalidMapping);
+                    }
                 }
             }
         }
+
         Ok(start_virt_addr)
     }
-
 
     /// Get current memory statistics
     pub fn get_stats(&self) -> super::MemoryStats {
@@ -244,64 +424,8 @@ impl MemoryManager {
             kernel_heap_used: 0,
         }
     }
-    unsafe fn active_level_4_table(phys_mem_offset: VirtAddr) -> &'static mut PageTable {
-        use x86_64::registers::control::Cr3;
-
-        let (level_4_table_frame, _) = Cr3::read();
-        let phys = level_4_table_frame.start_address();
-        let virt = phys_mem_offset + phys.as_u64();
-        let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
-
-        &mut *page_table_ptr
-    }
-
-    unsafe fn create_page_tables(phys_mem_offset: VirtAddr) -> Result<OffsetPageTable<'static>, &'static str> {
-        let level_4_table = Self::active_level_4_table(phys_mem_offset);
-        Ok(OffsetPageTable::new(level_4_table, phys_mem_offset))
-    }
-
-    pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
-        log::info!("Initializing Memory Manager...");
-        if INITIALIZED.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            // Get the physical memory offset
-            let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
-
-            // Initialize physical memory management first
-            physical::init(boot_info)?;
-
-            // Create page tables
-            let mut page_tables = unsafe { Self::create_page_tables(phys_mem_offset)? };
-
-            // Initialize virtual memory management
-            r#virtual::init(4096)?;
-
-            // Set up the kernel heap
-            allocator::init_heap()
-                .map_err(|_| "Failed to initialize kernel heap")?;
-            log::info!("Kernel heap initialized.");
-
-            // Initialize DMA memory management
-            dma::init()?;
-        }
-
-        INITIALIZED.store(true, Ordering::SeqCst);
-
-        #[cfg(feature = "std")]
-        log::info!("Memory management initialized (simulated mode)");
-
-        #[cfg(not(feature = "std"))]
-        log::info!("Memory management initialized");
-
-        Ok(())
-    }
-
-
 }
+
 /// Get the current page table
 #[cfg(not(feature = "std"))]
 pub fn current_page_table() -> &'static mut PageTable {

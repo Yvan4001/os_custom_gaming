@@ -453,23 +453,40 @@ unsafe fn active_level_4_table(phys_mem_offset: VirtAddr) -> &'static mut PageTa
     &mut *page_table_ptr
 }
 
-/// Initialize the frame allocator with the memory map
-/// Initialize the frame allocator with the memory map
-fn init_frame_allocator(
+/// Initialise l'allocateur de frames avec la carte mémoire du bootloader
+pub fn init_frame_allocator(
     memory_map: &'static MemoryMap,
-    kernel_start: PhysAddr,
-    kernel_end: PhysAddr,
+    phys_mem_offset: PhysAddr,
+    kernel_start: PhysAddr
 ) -> Result<(), &'static str> {
-    // Convert memory regions into ranges
+    log::info!("Initializing frame allocator with bootloader memory map");
+
+    // Calcul de la fin du noyau (estimation)
+    let kernel_end = PhysAddr::new(kernel_start.as_u64() + 8 * 1024 * 1024); // 8MB estimation
+
+    // Convertir les régions mémoire en plages utilisables
     let usable_ranges = memory_map
         .iter()
         .filter(|r| r.region_type == MemoryRegionType::Usable)
         .map(|r| r.range.start_addr()..r.range.end_addr());
 
-    // Initialize the frame bitmap with the ranges
-    with_frame_bitmap_mut(|bitmap| {
-        bitmap.init_frame_allocator(usable_ranges, kernel_start, kernel_end)
-    })?;
+    // Initialiser la bitmap des frames avec les plages
+    let pmm = get_physical_memory_manager();
+    let mut bitmap = pmm.frame_bitmap.lock();
+    bitmap.init_frame_allocator(usable_ranges, kernel_start, kernel_end);
+
+    // Calculer la mémoire totale
+    let total_memory = memory_map
+        .iter()
+        .filter(|r| r.region_type == MemoryRegionType::Usable)
+        .map(|r| r.range.end_addr() - r.range.start_addr())
+        .sum::<u64>() as usize;
+
+    pmm.total_memory.store(total_memory, Ordering::SeqCst);
+
+    // Calculer la taille du noyau
+    let kernel_size = kernel_end.as_u64().saturating_sub(kernel_start.as_u64()) as usize;
+    pmm.kernel_size.store(kernel_size, Ordering::SeqCst);
 
     Ok(())
 }

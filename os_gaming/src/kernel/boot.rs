@@ -173,11 +173,19 @@ fn cpu_init() -> Result<(), &'static str> {
 
 /// Initialize memory management
 fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
-    // Initialize memory manager
+    // Définir d'abord l'offset de mémoire physique
+    let phys_mem_offset = boot_info.physical_memory_offset;
+    crate::kernel::memory::allocator::set_memory_offset_info(phys_mem_offset);
+
+    // Ensuite initialiser le gestionnaire de mémoire
     MemoryManager::init(boot_info)?;
+
+    // Initialiser le tas du noyau après avoir configuré l'offset
+    crate::kernel::memory::allocator::init_heap()
+        .map_err(|_| "Échec de l'initialisation du tas")?;
+
     Ok(())
 }
-
 
 /// Initialize display subsystem
 fn display_init(config: &BootConfig) -> Result<(), &'static str> {

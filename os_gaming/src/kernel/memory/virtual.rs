@@ -69,9 +69,9 @@ impl VirtualMemoryManager {
     }
     
     /// Map physical memory to a specific virtual address
-    pub fn map_memory(&self, 
-                     virt_addr: VirtAddr, 
-                     phys_addr: PhysAddr, 
+    pub fn map_memory(&self,
+                     virt_addr: VirtAddr,
+                     phys_addr: PhysAddr,
                      size: usize,
                      protection: MemoryProtection,
                      mem_type: MemoryType) -> Result<(), MemoryError> {
@@ -80,16 +80,16 @@ impl VirtualMemoryManager {
             // In std mode, we just simulate mapping
             Ok(())
         }
-        
+
         #[cfg(not(feature = "std"))]
         {
             // Round size up to page size
             let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
             let size = pages * PAGE_SIZE;
-            
+
             // Convert protection to PageTableFlags
             let mut flags = PageTableFlags::PRESENT;
-            
+
             if protection.write {
                 flags |= PageTableFlags::WRITABLE;
             }
@@ -99,7 +99,7 @@ impl VirtualMemoryManager {
             if protection.user {
                 flags |= PageTableFlags::USER_ACCESSIBLE;
             }
-            
+
             // Set cache type
             match protection.cache_type {
                 CacheType::Uncacheable => {
@@ -110,24 +110,24 @@ impl VirtualMemoryManager {
                 }
                 _ => {} // Default caching
             }
-            
+
             // Map the pages
             let page_table = current_page_table();
-            
+
             for i in 0..pages {
                 let page_virt = VirtAddr::new(virt_addr.as_u64() + (i * PAGE_SIZE) as u64);
                 let page_phys = PhysAddr::new(phys_addr.as_u64() + (i * PAGE_SIZE) as u64);
-                
+
                 let page = Page::<Size4KiB>::containing_address(page_virt);
                 let frame = PhysFrame::containing_address(page_phys);
-                
+
                 unsafe {
                     // Create an offset page table using the current page table
                     let mut mapper = OffsetPageTable::new(
                         page_table,
                         VirtAddr::new(0xFFFF800000000000) // Kernel direct mapping offset
                     );
-                    
+
                     // Map the page
                     mapper.map_to(
                         page,
@@ -139,7 +139,7 @@ impl VirtualMemoryManager {
                     .flush();
                 }
             }
-            
+
             Ok(())
         }
     }

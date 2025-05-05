@@ -29,8 +29,9 @@ use crate::kernel::memory::memory_manager::CacheType;
 
 use crate::kernel::memory::memory_manager::{MemoryProtection, MemoryType};
 use crate::kernel::memory::physical::get_physical_memory_manager;
+static mut PHYSICAL_MEMORY_OFFSET: Option<u64> = None;
 
-/// Default initial heap size
+// Default initial heap size
 const DEFAULT_HEAP_SIZE: usize = 1024 * 1024 * 4; // 4MB // Example address for the mapper
 const PAGE_TABLE_ADDR: usize = 0x2000_0000;
 
@@ -48,6 +49,10 @@ pub struct KernelHeapAllocator {
 
 pub struct BootFrameAllocator {
     next_free_frame: usize,
+}
+
+pub struct MemoryOffsetInfo {
+    pub physical_memory_offset: u64,
 }
 
 impl BootFrameAllocator {
@@ -194,10 +199,28 @@ unsafe impl GlobalAlloc for KernelHeapAllocator {
 lazy_static! {
     static ref KERNEL_HEAP: KernelHeapAllocator = KernelHeapAllocator::new();
     static ref FRAME_ALLOCATOR: Mutex<KernelHeapAllocator> = Mutex::new(KernelHeapAllocator::new());
-    static ref MAPPER: Mutex<OffsetPageTable<'static>> = unsafe {
-        let level_4_table = &mut *(PAGE_TABLE_ADDR as *mut PageTable);
-        Mutex::new(OffsetPageTable::new(level_4_table, VirtAddr::new(HEAP_START as u64)))
+    static ref MEMORY_OFFSET_INFO: spin::Mutex<Option<MemoryOffsetInfo>> = spin::Mutex::new(None);
+    static ref MAPPER: Mutex<OffsetPageTable<'static>> = {
+        // Utiliser l'offset global précédemment stocké
+        let phys_mem_offset = get_physical_memory_offset();
+
+        // Récupérer la table de pages active
+        let level_4_table = unsafe { active_level_4_table(phys_mem_offset) };
+
+        Mutex::new(unsafe { OffsetPageTable::new(level_4_table, phys_mem_offset) })
     };
+}
+
+unsafe fn active_level_4_table(physical_memory_offset: VirtAddr) -> &'static mut PageTable {
+    use x86_64::{registers::control::Cr3, structures::paging::page_table::FrameError};
+
+    let (level_4_table_frame, _) = Cr3::read();
+
+    let phys = level_4_table_frame.start_address();
+    let virt = physical_memory_offset + phys.as_u64();
+    let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
+
+    &mut *page_table_ptr
 }
 
 
@@ -212,11 +235,24 @@ pub fn get_kernel_heap() -> &'static KernelHeapAllocator {
     &KERNEL_HEAP
 }
 
+pub fn set_memory_offset_info(physical_memory_offset: u64) {
+    unsafe {
+        PHYSICAL_MEMORY_OFFSET = Some(physical_memory_offset);
+    }
+}
+
+// Utilisez cette fonction pour obtenir le décalage lors de l'initialisation du mappeur
+fn get_physical_memory_offset() -> VirtAddr {
+    unsafe {
+        VirtAddr::new(PHYSICAL_MEMORY_OFFSET.expect("L'offset de mémoire physique n'a pas été initialisé"))
+    }
+}
+
 
 #[global_allocator]
 static ALLOCATOR: LockedHeap = LockedHeap::empty();
 
-pub const HEAP_START: usize = 0x_4444_4444_0000;
+pub const HEAP_START: usize = 0x_5555_5555_0000;
 pub const HEAP_SIZE: usize = 100 * 1024; // 100 KiB
 
 /// Initializes the kernel heap. Must only be called once.
@@ -229,29 +265,31 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
         Page::range_inclusive(heap_start_page, heap_end_page)
     };
 
-    let mut mapper = unsafe { MAPPER.lock() };
+    let mut mapper = MAPPER.lock();
     let mut frame_allocator = BootFrameAllocator::new();
 
     for page in page_range {
-        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
-
-        // Check if page is already mapped
-        if mapper.translate_page(page).is_ok() {
+        // Vérifier si la page est déjà mappée avant de tenter de la mapper
+        if let Ok(_) = mapper.translate_page(page) {
+            // La page est déjà mappée, passer à la suivante
             continue;
         }
 
-        // Allocate and map frame
+        // Allouer un frame et mapper la page
         let frame = frame_allocator
             .allocate_frame()
             .ok_or(MapToError::FrameAllocationFailed)?;
 
+        let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
+
         unsafe {
-            mapper.map_to(page, frame, flags, &mut frame_allocator)?
+            mapper
+                .map_to(page, frame, flags, &mut frame_allocator)?
                 .flush();
         }
     }
 
-    // Initialize the allocator
+    // Initialiser l'allocateur de tas après le mapping
     unsafe {
         ALLOCATOR.lock().init(HEAP_START as *mut u8, HEAP_SIZE);
     }

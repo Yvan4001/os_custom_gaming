@@ -8,13 +8,15 @@ mod dma;
 mod memory_manager;
 pub mod physical;
 pub mod r#virtual;
-mod allocator;
+pub mod allocator;
 
 use spin::Mutex;
 use lazy_static::lazy_static;
 use x86_64::structures::paging::{FrameAllocator, Mapper, PageSize, PageTableFlags};
 pub(crate) use memory_manager::{MemoryError, MemoryManager, PhysicalMemoryManager};
 use bootloader::BootInfo;
+use x86_64::PhysAddr;
+use core::sync::atomic::{AtomicBool, Ordering};
 use crate::kernel::memory::r#virtual::VirtualMemoryManager;
 
 // Create thread-safe static reference to the memory manager
@@ -24,17 +26,19 @@ lazy_static! {
 
 /// Initialize memory management subsystem
 pub fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
-    // Initialize the physical memory manager first
-    physical::init(boot_info)?;
+    // Vérifier si une page est déjà mappée avant d'essayer de la mapper
+    let phys_mem_offset = boot_info.physical_memory_offset;
+    crate::kernel::memory::allocator::set_memory_offset_info(phys_mem_offset);
 
-    // Initialize the kernel heap allocator
-    allocator::init(0)?;
+    // Utiliser un verrou pour éviter les initialisations multiples
+    static INITIALIZED: AtomicBool = AtomicBool::new(false);
+    if INITIALIZED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+        // Déjà initialisé, ne rien faire
+        return Ok(());
+    }
 
-    // Initialize the virtual memory manager (paging)
-    r#virtual::init(32)?;
-
-    // Initialize DMA support for devices
-    dma::init()?;
+    // Initialiser le gestionnaire de mémoire avec vérification des mappages existants
+    MemoryManager::init(boot_info)?;
 
     Ok(())
 }
@@ -59,7 +63,7 @@ pub fn free_virtual(ptr: *mut u8) {
 
 /// Map physical memory to virtual address space
 pub fn map_physical(
-    phys_addr: PhysicalMemoryManager,
+    phys_addr: x86_64::PhysAddr,  // Changé de PhysicalMemoryManager à PhysAddr
     size: usize,
     flags: PageTableFlags,
     mapper: &mut impl Mapper<x86_64::structures::paging::Size4KiB>,
@@ -87,14 +91,25 @@ pub struct MemoryStats {
 }
 
 pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
-    // Initialize the memory management subsystem with boot info
-    memory_init(boot_info)?;
+    // Vérifier si déjà initialisé
+    static INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-    // Initialize the memory manager
-    let _ = MEMORY_MANAGER.lock();
+    if INITIALIZED.swap(true, Ordering::SeqCst) {
+        // Déjà initialisé, retourner sans erreur
+        return Ok(());
+    }
 
-    // Call the init function with boot info
-    memory_manager::MemoryManager::init(boot_info)?;
+    // Initialiser l'allocateur de tas du noyau
+    allocator::set_memory_offset_info(boot_info.physical_memory_offset);
+
+    // Initialiser la mémoire physique
+    physical::init(boot_info)?;
+
+    // Initialiser le gestionnaire de mémoire virtuelle avec vérification des mappages existants
+    r#virtual::init(32)?;
+
+    // Initialiser le support DMA
+    dma::init()?;
 
     Ok(())
 }
