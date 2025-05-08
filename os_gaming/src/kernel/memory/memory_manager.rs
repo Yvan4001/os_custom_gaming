@@ -2,7 +2,7 @@
 //!
 //! This module handles physical and virtual memory management,
 //! including page allocation, memory mapping, and heap allocation.
-
+extern crate alloc;
 use core::sync::atomic::{AtomicBool, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
@@ -23,13 +23,12 @@ use x86_64::{
     },
     VirtAddr, PhysAddr,
 };
-use x86_64::structures::paging::mapper::TranslateError;
+use x86_64::structures::paging::mapper::{Translate, TranslateResult, MappedFrame};
 use x86_64::structures::paging::page_table::PageTableEntry;
-
+use x86_64::structures::paging::{Size2MiB, Size1GiB};
 use core::ptr::NonNull;
 use bootloader::BootInfo;
 use x86_64::structures::paging::mapper::MapToError;
-extern crate alloc;
 use alloc::string::String;
 use crate::kernel::memory::physical::PAGE_SIZE;
 use x86_64::structures::paging::mapper::MapperFlush;
@@ -350,7 +349,8 @@ impl MemoryManager {
         physical_address: PhysAddr,
         size: usize,
         flags: PageTableFlags,
-        mapper: &mut impl Mapper<Size4KiB>,
+        // Corriger la contrainte Translate (pas de générique)
+        mapper: &mut (impl Mapper<Size4KiB> + Translate),
         frame_allocator: &mut impl FrameAllocator<Size4KiB>
     ) -> Result<VirtAddr, MemoryError> {
         if size == 0 {
@@ -362,7 +362,7 @@ impl MemoryManager {
 
         let page_range = {
             let start_page = Page::<Size4KiB>::containing_address(start_virt_addr);
-            let end_virt_addr = start_virt_addr + u64::try_from(size).unwrap() - 1u64;
+            let end_virt_addr = start_virt_addr + u64::try_from(size).map_err(|_| MemoryError::InvalidRange)? - 1u64;
             let end_page = Page::<Size4KiB>::containing_address(end_virt_addr);
             Page::range_inclusive(start_page, end_page)
         };
@@ -373,37 +373,95 @@ impl MemoryManager {
             let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
 
             unsafe {
-                if let Ok(existing_mapping) = mapper.translate_page(page) {
-                    if let Some(existing_entry) = existing_mapping {
-                        if existing_entry.frame() == Ok(frame) && existing_entry.flags() == flags {
-                            log::info!("Page {:?} already correctly mapped, skipping.", page);
-                            continue;
-                        } else {
-                            log::warn!("Page {:?} already mapped with different parameters, consider unmapping first.", page);
-                            return Err(MemoryError::AlreadyMapped); // Or handle differently
+                // Vérifier si la page est déjà mappée en utilisant translate
+                // Match directement sur TranslateResult (pas Ok/Err)
+                match mapper.translate(page.start_address()) {
+                    TranslateResult::Mapped { frame: mapped_frame, offset: _, flags: existing_flags } => {
+                        // Vérifier si c'est une trame de 4KiB
+                        match mapped_frame {
+                            // Utiliser la bonne variante MappedFrame::Size4KiB
+                            MappedFrame::Size4KiB(phys_frame) => {
+                                // Comparer la trame physique et les drapeaux
+                                if phys_frame == frame && existing_flags == flags {
+                                    log::trace!("Page {:?} already correctly mapped, skipping.", page);
+                                    continue; // Passer à la page suivante
+                                } else {
+                                    log::warn!(
+                                        "Page {:?} already mapped with different parameters (Frame: {:?}, Flags: {:?}). Expected (Frame: {:?}, Flags: {:?})",
+                                        page, phys_frame, existing_flags, frame, flags
+                                    );
+                                    return Err(MemoryError::AlreadyMapped);
+                                }
+                            }
+                            // Gérer les cas de pages énormes comme des erreurs ici
+                            MappedFrame::Size2MiB(_) | MappedFrame::Size1GiB(_) => {
+                                log::error!("Page {:?} is part of a huge page, cannot map individually.", page);
+                                return Err(MemoryError::InvalidMapping);
+                            }
                         }
                     }
+                    TranslateResult::NotMapped => {
+                        // La page n'est pas mappée, procéder au mappage (géré ci-dessous par map_to)
+                        log::trace!("Page {:?} not mapped, proceeding to map.", page);
+                    }
+                    TranslateResult::InvalidFrameAddress(addr) => {
+                        log::error!("Invalid frame address {:?} encountered during translation for page {:?}", addr, page);
+                        return Err(MemoryError::InvalidMapping);
+                    }
+                    // Pas de Err(TranslateError) ici, translate ne retourne pas Result
                 }
+
+                // Si la page n'était pas mappée (TranslateResult::NotMapped), on procède au mappage.
                 match mapper.map_to(page, frame, flags, frame_allocator) {
                     Ok(flush) => {
                         flush.flush();
+                        log::trace!("Mapped page {:?} to frame {:?}", page, frame);
                     }
                     Err(MapToError::FrameAllocationFailed) => {
+                        log::error!("Frame allocation failed for mapping page {:?}", page);
                         return Err(MemoryError::OutOfMemory);
                     }
                     Err(MapToError::ParentEntryHugePage) => {
+                        log::error!("Cannot map page {:?} because a parent entry is a huge page.", page);
                         return Err(MemoryError::InvalidMapping);
                     }
-                    Err(MapToError::PageAlreadyMapped(existing_frame)) => {
-                        if existing_frame == frame {
-                            log::info!("Page {:?} already mapped to the same frame, skipping (though map_to reported it).", page);
-                            continue;
-                        } else {
-                            log::error!("Page {:?} already mapped to a different frame...", page);
-                            return Err(MemoryError::AlreadyMapped);
+                    Err(MapToError::PageAlreadyMapped(_existing_frame)) => {
+                        // Revérifier car l'état a pu changer entre translate et map_to
+                        match mapper.translate(page.start_address()) {
+                            // Match directement sur TranslateResult
+                            TranslateResult::Mapped { frame: current_mapped_frame, offset: _, flags: current_flags } => {
+                                match current_mapped_frame {
+                                    // Utiliser la bonne variante MappedFrame::Size4KiB
+                                    MappedFrame::Size4KiB(current_phys_frame) => {
+                                        if current_phys_frame == frame && current_flags == flags {
+                                            log::trace!("Page {:?} was already mapped correctly (reported by map_to).", page);
+                                            continue; // Le mappage correct existe
+                                        } else {
+                                            log::error!("map_to reported PageAlreadyMapped for page {:?}, but re-translation shows different parameters (Frame: {:?}, Flags: {:?}). Expected (Frame: {:?}, Flags: {:?})", page, current_phys_frame, current_flags, frame, flags);
+                                            return Err(MemoryError::AlreadyMapped);
+                                        }
+                                    }
+                                    // Gérer les cas de pages énormes
+                                    MappedFrame::Size2MiB(_) | MappedFrame::Size1GiB(_) => {
+                                        log::error!("map_to reported PageAlreadyMapped for page {:?}, but re-translation shows it's a huge page.", page);
+                                        return Err(MemoryError::InvalidMapping); // Ou AlreadyMapped
+                                    }
+                                }
+                            }
+                            TranslateResult::NotMapped => {
+                                log::error!("Inconsistent state: map_to reported PageAlreadyMapped for page {:?}, but re-translation shows NotMapped.", page);
+                                return Err(MemoryError::InvalidMapping);
+                            }
+                            TranslateResult::InvalidFrameAddress(addr) => {
+                                log::error!("Inconsistent state: map_to reported PageAlreadyMapped for page {:?}, but re-translation shows InvalidFrameAddress {:?}.", page, addr);
+                                return Err(MemoryError::InvalidMapping);
+                            }
+                            // Pas de Err(TranslateError)
                         }
                     }
+                    // Gérer d'autres erreurs potentielles de map_to si nécessaire
                     _ => {
+                        log::error!("An unexpected error occurred while mapping page {:?}", page);
                         return Err(MemoryError::InvalidMapping);
                     }
                 }

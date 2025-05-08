@@ -6,12 +6,35 @@ TARGET_SPEC="x86_64-os_gaming" # Nom de la cible (sans .json)
 TARGET_JSON="$TARGET_SPEC.json" # Nom du fichier de configuration de la cible
 
 echo "🔧 Configuring kernel environment..."
-# Create temporary configuration file for cargo (if needed, currently empty step)
+# Assurez-vous que les composants nightly sont présents
+rustup component add rust-src --toolchain nightly-x86_64-unknown-linux-gnu
+rustup component add llvm-tools-preview --toolchain nightly-x86_64-unknown-linux-gnu
 
-echo "🚀 Compiling the kernel (verbose)..."
-# Execute the library compilation with bootimage, specifying the package and +nightly
-# Le +nightly est important ici
-cargo +nightly bootimage -vv
+echo "🚀 Building kernel with build-std..."
+# Étape 1: Compiler le noyau avec les flags explicites, comme dans le .bat
+# Note: Utilisation de +nightly et $TARGET_JSON
+cargo +nightly build \
+    -Z build-std=core,alloc,compiler_builtins \
+    -Z build-std-features=compiler-builtins-mem \
+    --target $TARGET_JSON \
+    -Z unstable-options \
+    -vv # Ajout de verbosité pour le débogage
+
+# Vérifier si la compilation a réussi (bien que set -e devrait le faire)
+if [ $? -ne 0 ]; then
+    echo "❌ Kernel build failed"
+    exit 1
+fi
+
+echo "📦 Creating bootimage..."
+# Étape 2: Créer l'image de démarrage, en spécifiant la cible
+# bootimage utilisera les artefacts de la compilation précédente
+cargo +nightly bootimage --target $TARGET_JSON -vv # Ajout de verbosité
+
+if [ $? -ne 0 ]; then
+    echo "❌ Bootimage creation failed"
+    exit 1
+fi
 
 # --- ISO Creation Steps ---
 echo "📁 Preparing directories..."
@@ -25,7 +48,7 @@ mkdir -p $ISO_DIR $BOOT_DIR $GRUB_DIR
 
 echo "📦 Installing files..."
 # Copier le binaire du noyau produit par bootimage
-# Le chemin de sortie utilise la cible spécifiée dans .cargo/config.toml
+# Le chemin de sortie utilise la cible spécifiée
 cp target/$TARGET_SPEC/debug/bootimage-$PROJECT_NAME.bin $BOOT_DIR/kernel.bin
 
 echo "📄 Preparing system modules (if needed)..."
@@ -57,3 +80,6 @@ echo "✅ ISO created successfully: $PROJECT_NAME.iso (at workspace root)"
 # --- End of ISO Creation Steps ---
 
 echo "✨ Build process finished."
+
+echo "💻 To run the ISO in QEMU, use:"
+echo "qemu-system-x86_64 -drive format=raw,file=target/x86_64-os_gaming/debug/bootimage-os_gaming.bin"

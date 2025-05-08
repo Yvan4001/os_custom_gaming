@@ -14,13 +14,14 @@ use x86_64::{
 };
 use crate::kernel::memory::MemoryManager;
 use super::memory_init;
+use crate::kernel::memory::allocator::get_physical_memory_offset;
+use crate::kernel::memory::memory_manager::current_page_table;
 
 
 
 #[cfg(not(feature = "std"))]
 use bootloader::bootinfo::{BootInfo, MemoryRegion, MemoryRegionType};
 use bootloader::bootinfo::MemoryMap;
-use crate::kernel::memory::memory_manager::current_page_table;
 
 
 /// Size of a page (4KB)
@@ -221,6 +222,38 @@ impl FrameBitmap {
             }
         }
         
+        None
+    }
+
+    pub fn allocate_contiguous(&mut self, count: usize) -> Option<usize> {
+        if count == 0 || self.free_frames.load(Ordering::SeqCst) < count {
+            return None;
+        }
+
+        // Search for a contiguous range of free frames
+        let mut start_frame = 0;
+        let mut current_run = 0;
+
+        for frame in 0..self.total_frames {
+            if !self.is_frame_used(frame) {
+                if current_run == 0 {
+                    start_frame = frame;
+                }
+                current_run += 1;
+
+                if current_run == count {
+                    // Found enough contiguous frames
+                    for f in start_frame..(start_frame + count) {
+                        self.set_frame(f, true);
+                    }
+                    return Some(start_frame);
+                }
+            } else {
+                // Reset the run on used frame
+                current_run = 0;
+            }
+        }
+
         None
     }
     
@@ -524,48 +557,110 @@ pub fn init(multiboot_info_addr: usize) -> Result<(), &'static str> {
 }
 
 /// Get a reference to the physical memory manager
-pub fn get_physical_memory_manager() -> &'static PhysicalMemoryManager {
-    &PHYSICAL_MEMORY_MANAGER
+pub fn get_physical_memory_manager() -> &'static mut PhysicalMemoryManager {
+    // Pour un objet créé avec lazy_static, on doit utiliser un autre pattern
+    static mut PMM_PTR: Option<*mut PhysicalMemoryManager> = None;
+
+    unsafe {
+        if PMM_PTR.is_none() {
+            PMM_PTR = Some(&PHYSICAL_MEMORY_MANAGER as *const _ as *mut _);
+        }
+        &mut *PMM_PTR.unwrap()
+    }
 }
 
 /// Convert a physical address to a virtual address
 pub fn phys_to_virt(phys: PhysAddr) -> VirtAddr {
-    // In a higher-half kernel, this would add the kernel base offset
-    // For direct mapping, this is often + KERNEL_VIRTUAL_BASE
     #[cfg(not(feature = "std"))]
     {
-        // Use the direct mapping offset (0xFFFF800000000000 is common)
-        VirtAddr::new(phys.as_u64() + 0xFFFF800000000000)
+        // Récupérer l'offset dynamiquement
+        let phys_mem_offset = get_physical_memory_offset();
+        phys_mem_offset + phys.as_u64()
     }
-    
+
     #[cfg(feature = "std")]
     {
-        // In std mode, this is just simulated
+        // En mode std, c'est juste simulé
         VirtAddr::new(phys.as_u64())
     }
 }
 
+/// Allocates a contiguous block of physical memory suitable for DMA.
+///
+/// # Arguments
+///
+/// * `size`: The requested size of the memory block in bytes.
+/// * `alignment`: The required alignment for the starting physical address.
+/// * `limit`: The maximum physical address allowed for the allocation (exclusive).
+///
+/// # Returns
+///
+/// An `Option<PhysAddr>` containing the starting physical address of the
+/// allocated block if successful, or `None` if allocation fails (e.g., due to
+/// insufficient memory or exceeding the limit).
+pub fn allocate_contiguous_dma(size: usize, alignment: usize, limit: usize) -> Option<PhysAddr> {
+    // Align the requested size up to the nearest page boundary.
+    // This ensures we allocate whole pages.
+    let aligned_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+
+    // Align the address limit up to the nearest page boundary.
+    let aligned_limit = (limit + PAGE_SIZE - 1) & !(PAGE_SIZE - 1);
+
+    // Check if the required aligned size exceeds the specified physical address limit.
+    // Note: This check might be slightly incorrect if `limit` is meant to be the *end* address limit.
+    // If `limit` is the highest allowed address, the check should be `start_addr + aligned_size > limit`.
+    // However, without knowing the exact allocation strategy (e.g., searching from low addresses),
+    // this check prevents allocating a block that *could* potentially cross the limit.
+    if aligned_size > aligned_limit {
+        // Allocation is impossible within the given constraints.
+        return None;
+    }
+
+    // TODO: The `alignment` parameter is currently unused. The allocation should
+    // search for a block that meets the specified alignment requirement.
+
+    // Obtain a reference to the global physical memory manager.
+    let pmm = get_physical_memory_manager();
+    // Acquire a lock on the frame bitmap to ensure exclusive access during allocation.
+    let mut bitmap = pmm.frame_bitmap.lock();
+    // Calculate the number of contiguous physical memory frames (pages) required.
+    let num_pages = aligned_size / PAGE_SIZE;
+    // Attempt to find and allocate a contiguous sequence of `num_pages` frames using the bitmap.
+    // The `?` operator propagates `None` if `allocate_contiguous` fails.
+    let start_frame = bitmap.allocate_contiguous(num_pages)?;
+
+    // Calculate the physical address corresponding to the start of the allocated block.
+    // Each frame corresponds to `PAGE_SIZE` bytes.
+    let phys_addr = PhysAddr::new((start_frame * PAGE_SIZE) as u64);
+
+    // Return the starting physical address wrapped in `Some` to indicate success.
+    Some(phys_addr)
+}
 
 /// Convert a virtual address to a physical address
 pub fn virt_to_phys(virt: VirtAddr) -> Option<PhysAddr> {
     #[cfg(not(feature = "std"))]
     {
-        // Check if the address is in the direct mapping range
-        if virt.as_u64() >= 0xFFFF800000000000 {
-            Some(PhysAddr::new(virt.as_u64() - 0xFFFF800000000000))
+        // Récupérer l'offset dynamiquement
+        let phys_mem_offset = get_physical_memory_offset();
+        let phys_mem_offset_u64 = phys_mem_offset.as_u64();
+
+        // Vérifier si l'adresse est dans la plage de mappage direct
+        // La plage commence à l'offset de mémoire physique
+        if virt.as_u64() >= phys_mem_offset_u64 {
+            // L'adresse est probablement dans la plage de mappage direct
+            Some(PhysAddr::new(virt.as_u64() - phys_mem_offset_u64))
         } else {
-            use x86_64::structures::paging::{Translate, OffsetPageTable};
+            // L'adresse n'est pas dans la plage de mappage direct, utiliser la traduction de table de pages
 
-            // Définir l'offset physique-vers-virtuel
-            let phys_offset = VirtAddr::new(0xFFFF800000000000);
-
-            // Obtenir la table de pages courante
+            // Obtenir la table de pages courante en utilisant l'offset correct
             let page_table = unsafe {
-                let page_table = &mut *current_page_table();
-                OffsetPageTable::new(page_table, phys_offset)
+                // Assurez-vous que current_page_table() retourne &'static mut PageTable
+                let level_4_table_ptr = current_page_table();
+                OffsetPageTable::new(&mut *level_4_table_ptr, phys_mem_offset)
             };
 
-            // Translate the virtual address to a physical address
+            // Traduire l'adresse virtuelle en adresse physique
             page_table.translate_addr(virt)
         }
     }

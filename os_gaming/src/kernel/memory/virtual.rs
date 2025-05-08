@@ -73,6 +73,7 @@ impl VirtualMemoryManager {
                      virt_addr: VirtAddr,
                      phys_addr: PhysAddr,
                      size: usize,
+                      mapper: &mut OffsetPageTable,
                      protection: MemoryProtection,
                      mem_type: MemoryType) -> Result<(), MemoryError> {
         #[cfg(feature = "std")]
@@ -86,6 +87,8 @@ impl VirtualMemoryManager {
             // Round size up to page size
             let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
             let size = pages * PAGE_SIZE;
+
+            let _mapper = crate::kernel::memory::allocator::MAPPER.lock();
 
             // Convert protection to PageTableFlags
             let mut flags = PageTableFlags::PRESENT;
@@ -123,11 +126,6 @@ impl VirtualMemoryManager {
 
                 unsafe {
                     // Create an offset page table using the current page table
-                    let mut mapper = OffsetPageTable::new(
-                        page_table,
-                        VirtAddr::new(0xFFFF800000000000) // Kernel direct mapping offset
-                    );
-
                     // Map the page
                     mapper.map_to(
                         page,
@@ -202,7 +200,7 @@ impl VirtualMemoryManager {
     }
     
     /// Change protection for a memory region
-    pub fn protect(&self, virt_addr: VirtAddr, size: usize, protection: MemoryProtection) -> Result<(), MemoryError> {
+    pub fn protect(&self, virt_addr: VirtAddr, size: usize, protection: MemoryProtection, mapper: &mut OffsetPageTable) -> Result<(), MemoryError> {
         #[cfg(feature = "std")]
         {
             // In std mode, we just simulate
@@ -251,7 +249,7 @@ impl VirtualMemoryManager {
                 if let Some(phys_addr) = physical::virt_to_phys(page_virt) {
                     // Unmap and remap with new protection
                     self.unmap_memory(page_virt, PAGE_SIZE)?;
-                    self.map_memory(page_virt, phys_addr, PAGE_SIZE, protection, MemoryType::Normal)?;
+                    self.map_memory(page_virt, phys_addr, PAGE_SIZE, mapper, protection, MemoryType::Normal)?;
                 }
             }
             
@@ -260,7 +258,7 @@ impl VirtualMemoryManager {
     }
     
     /// Allocate and map physical memory
-    pub fn allocate_memory(&self, size: usize, protection: MemoryProtection, mem_type: MemoryType) -> Result<VirtAddr, MemoryError> {
+    pub fn allocate_memory(&self, size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<VirtAddr, MemoryError> {
         // Allocate virtual space
         let virt_addr = self.allocate_virtual_space(size, PAGE_SIZE)?;
         
@@ -276,7 +274,7 @@ impl VirtualMemoryManager {
                 .ok_or(MemoryError::OutOfMemory)?;
             
             // Map the memory
-            self.map_memory(virt_addr, phys_addr, size, protection, mem_type)?;
+            self.map_memory(virt_addr, phys_addr, size, mapper, protection, mem_type)?;
         }
         
         Ok(virt_addr)
@@ -327,7 +325,7 @@ struct FrameAllocImpl;
 unsafe impl FrameAllocator<Size4KiB> for FrameAllocImpl {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         let pmm = physical::get_physical_memory_manager();
-        pmm.allocate_frame().map(|addr| PhysFrame::containing_address(addr))
+        pmm.allocate_frame().map(PhysFrame::containing_address)
     }
 }
 
@@ -355,8 +353,8 @@ pub fn get_kernel_heap() -> &'static KernelHeapAllocator {
 }
 
 /// Allocate virtual memory
-pub fn allocate(size: usize, protection: MemoryProtection, mem_type: MemoryType) -> Result<VirtAddr, MemoryError> {
-    get_virtual_memory_manager().allocate_memory(size, protection, mem_type)
+pub fn allocate(size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<VirtAddr, MemoryError> {
+    get_virtual_memory_manager().allocate_memory(size, protection, mem_type, mapper)
 }
 
 /// Free allocated memory
@@ -365,8 +363,8 @@ pub fn free(addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
 }
 
 /// Map physical memory to virtual memory
-pub fn map(virt_addr: VirtAddr, phys_addr: PhysAddr, size: usize, protection: MemoryProtection, mem_type: MemoryType) -> Result<(), MemoryError> {
-    get_virtual_memory_manager().map_memory(virt_addr, phys_addr, size, protection, mem_type)
+pub fn map(virt_addr: VirtAddr, phys_addr: PhysAddr, size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<(), MemoryError> {
+    get_virtual_memory_manager().map_memory(virt_addr, phys_addr, size, mapper , protection, mem_type)
 }
 
 /// Unmap virtual memory
@@ -374,7 +372,26 @@ pub fn unmap(virt_addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
     get_virtual_memory_manager().unmap_memory(virt_addr, size)
 }
 
+pub fn map_physical_memory(virt_addr: VirtAddr, phys_addr: PhysAddr, size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<VirtAddr, MemoryError> {
+    get_virtual_memory_manager().map_memory(virt_addr, phys_addr, size, mapper, protection, mem_type)?;
+    Ok(virt_addr)
+}
+/*
+let virt_addr = r#virtual::map_physical_region(
+        PhysAddr::new(phys_addr as u64), // Convert usize phys_addr to PhysAddr
+        size,
+        protection,
+        MemoryType::DMA, // Mark memory as DMA type
+        &mut *mapper,    // Pass the page table mapper
+    )
+ */
+pub fn map_physical_region(phys_addr: PhysAddr, size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<VirtAddr, MemoryError> {
+    let virt_addr = get_virtual_memory_manager().allocate_memory(size, protection, mem_type, mapper)?;
+    get_virtual_memory_manager().map_memory(virt_addr, phys_addr, size, mapper, protection, mem_type)?;
+    Ok(virt_addr)
+}
+
 /// Change memory protection
-pub fn protect(virt_addr: VirtAddr, size: usize, protection: MemoryProtection) -> Result<(), MemoryError> {
-    get_virtual_memory_manager().protect(virt_addr, size, protection)
+pub fn protect(virt_addr: VirtAddr, size: usize, protection: MemoryProtection, mapper: &mut OffsetPageTable) -> Result<(), MemoryError> {
+    get_virtual_memory_manager().protect(virt_addr, size, protection, mapper)
 }

@@ -18,6 +18,7 @@ use linked_list_allocator::LockedHeap;
 
 #[cfg(not(feature = "std"))]
 use x86_64::VirtAddr;
+use x86_64::PhysAddr;
 use x86_64::structures::paging::{Mapper, Page, PhysFrame};
 use x86_64::structures::paging::mapper::MapToError;
 use x86_64::structures::paging::Size4KiB;
@@ -69,7 +70,7 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
 
         get_physical_memory_manager()
             .allocate_frame()
-            .map(|addr| PhysFrame::containing_address(addr))
+            .map(PhysFrame::containing_address)
     }
 }
 
@@ -102,25 +103,29 @@ impl KernelHeapAllocator {
         if self.initialized.load(Ordering::SeqCst) {
             return Ok(());
         }
-        
+
         #[cfg(not(feature = "std"))]
         {
-            // Allocate memory for the heap
+            // Obtenir une référence mutable au mapper global
+            let mut mapper_guard = MAPPER.lock(); // Renommé pour clarté, c'est le MutexGuard
+
+            // Allocate memory for the heap, en passant le mapper
             let heap_start = match super::r#virtual::allocate( // Changed from virtual_mem
-                size,
-                MemoryProtection {
-                    read: true,
-                    write: true,
-                    execute: false,
-                    user: false,
-                    cache_type: CacheType::WriteBack,
-                },
-                MemoryType::Normal
+                                                               size,
+                                                               MemoryProtection {
+                                                                   read: true,
+                                                                   write: true,
+                                                                   execute: false,
+                                                                   user: false,
+                                                                   cache_type: CacheType::WriteBack,
+                                                               },
+                                                               MemoryType::Normal,
+                                                               &mut *mapper_guard, // Passer une référence mutable au contenu du MutexGuard
             ) {
                 Ok(addr) => addr,
                 Err(_) => return Err("Failed to allocate heap memory"),
             };
-            
+
             // Initialize the allocator
             unsafe {
                 self.allocator.lock().init(
@@ -200,7 +205,7 @@ lazy_static! {
     static ref KERNEL_HEAP: KernelHeapAllocator = KernelHeapAllocator::new();
     static ref FRAME_ALLOCATOR: Mutex<KernelHeapAllocator> = Mutex::new(KernelHeapAllocator::new());
     static ref MEMORY_OFFSET_INFO: spin::Mutex<Option<MemoryOffsetInfo>> = spin::Mutex::new(None);
-    static ref MAPPER: Mutex<OffsetPageTable<'static>> = {
+    pub static ref MAPPER: Mutex<OffsetPageTable<'static>> = {
         // Utiliser l'offset global précédemment stocké
         let phys_mem_offset = get_physical_memory_offset();
 
@@ -242,7 +247,7 @@ pub fn set_memory_offset_info(physical_memory_offset: u64) {
 }
 
 // Utilisez cette fonction pour obtenir le décalage lors de l'initialisation du mappeur
-fn get_physical_memory_offset() -> VirtAddr {
+pub fn get_physical_memory_offset() -> VirtAddr {
     unsafe {
         VirtAddr::new(PHYSICAL_MEMORY_OFFSET.expect("L'offset de mémoire physique n'a pas été initialisé"))
     }
@@ -271,11 +276,9 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     for page in page_range {
         // Vérifier si la page est déjà mappée avant de tenter de la mapper
         if let Ok(_) = mapper.translate_page(page) {
-            // La page est déjà mappée, passer à la suivante
             continue;
         }
 
-        // Allouer un frame et mapper la page
         let frame = frame_allocator
             .allocate_frame()
             .ok_or(MapToError::FrameAllocationFailed)?;
@@ -289,7 +292,6 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
         }
     }
 
-    // Initialiser l'allocateur de tas après le mapping
     unsafe {
         ALLOCATOR.lock().init(HEAP_START as *mut u8, HEAP_SIZE);
     }

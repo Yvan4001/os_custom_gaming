@@ -24,7 +24,7 @@ raw-cpuid = "11.5.0"
 panic-abort = "0.3.2"
 libc = { version = "0.2.172", default-features = false }
 linked_list_allocator = "0.10.5"
-bootloader = { version = "0.9.23", default-features = false, features = ["map_physical_memory"] }
+bootloader = { version = "0.9.31", default-features = false, features = ["map_physical_memory"] }
 log = { version = "0.4.27", default-features = false }
 uart_16550 = "0.3.2"
 hashbrown = "0.14"

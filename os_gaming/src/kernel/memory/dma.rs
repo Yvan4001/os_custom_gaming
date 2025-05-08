@@ -3,8 +3,20 @@ use crate::kernel::memory::r#virtual::VirtualMemoryManager;
 use core::sync::atomic::{AtomicBool, Ordering};
 extern crate alloc;
 use alloc::vec::Vec;
-use x86_64::PhysAddr;
+use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::{Page, PageTableFlags, PhysFrame, Size4KiB};
+use x86_64::structures::paging::Translate;
+use x86_64::structures::paging::mapper::MapToError;
+use x86_64::structures::paging::FrameAllocator;
 use core::ptr;
+use crate::kernel::memory::allocator::MAPPER;
+use crate::kernel::memory::physical::get_physical_memory_manager;
+use crate::kernel::memory::r#virtual::{allocate as allocate_virtual, map_physical_memory};
+use crate::kernel::memory::memory_manager::{MemoryProtection, CacheType, MemoryType, MemoryInfo};
+use crate::kernel::memory::MemoryError;
+use x86_64::structures::paging::Mapper;
+use crate::kernel::memory::physical;
+use crate::kernel::memory::r#virtual;
 
 
 // Helper function to read PCI configuration space
@@ -42,14 +54,29 @@ pub struct DmaBuffer {
     pub coherent: bool,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DmaAddressLimit {
-    /// 24-bit addressing (ISA DMA, < 16MB)
-    Bits24,
-    /// 32-bit addressing (< 4GB)
-    Bits32,
-    /// 64-bit addressing (anywhere in memory)
-    Bits64,
+    /// No limit (up to maximum physical address).
+    None,
+    /// Limit to addresses below 16MB (24-bit).
+    Limit16M,
+    /// Limit to addresses below 4GB (32-bit).
+    Limit4G,
+    /// Custom limit.
+    Custom(u64)
+}
+
+impl DmaAddressLimit {
+    /// Converts the limit to a usize physical address boundary.
+    /// Returns None if the limit is DmaAddressLimit::None.
+    fn as_physical_limit(&self) -> Option<usize> {
+        match self {
+            DmaAddressLimit::None => None,
+            DmaAddressLimit::Limit16M => Some(0x100_0000), // 16MB
+            DmaAddressLimit::Limit4G => Some(0x1_0000_0000), // 4GB
+            DmaAddressLimit::Custom(addr) => Some(*addr as usize),
+        }
+    }
 }
 
 /// DMA allocation flags
@@ -131,7 +158,6 @@ lazy_static::lazy_static! {
 /// Global DMA manager
 pub struct DmaManager {
     initialized: AtomicBool,
-    // You might want to add a memory pool or allocation tracking here
 }
 
 impl DmaManager {
@@ -318,7 +344,7 @@ impl DmaManager {
         let isa_dma_size = 1024 * 1024; // 1MB
         let isa_dma_region = allocate_dma_region(
             isa_dma_size, 
-            DmaAddressLimit::Bits24, 
+            DmaAddressLimit::Limit16M,
             4096
         )?;
         
@@ -326,7 +352,7 @@ impl DmaManager {
         let dma32_size = 4 * 1024 * 1024; // 4MB
         let dma32_region = allocate_dma_region(
             dma32_size, 
-            DmaAddressLimit::Bits32, 
+            DmaAddressLimit::Limit4G,
             4096
         )?;
         
@@ -334,7 +360,7 @@ impl DmaManager {
         let dma64_size = 16 * 1024 * 1024; // 16MB
         let dma64_region = allocate_dma_region(
             dma64_size, 
-            DmaAddressLimit::Bits64, 
+            DmaAddressLimit::Limit4G,
             4096
         )?;
         
@@ -437,7 +463,7 @@ impl DmaManager {
         for _ in 0..BOUNCE_BUFFER_COUNT {
             match allocate_dma_region(
                 BOUNCE_BUFFER_SIZE,
-                DmaAddressLimit::Bits24, // ISA DMA compatible
+                DmaAddressLimit::Limit16M, // ISA DMA compatible
                 4096
             ) {
                 Ok(region) => bounce_buffers.push(region),
@@ -618,45 +644,88 @@ impl DmaManager {
 
 
     /// Initialize IOMMU if available
-    fn initialize_iommu(&self) -> Result<(), &'static str> {
+    pub fn initialize_iommu(&self) -> Result<(), &'static str> {
         #[cfg(feature = "std")]
         {
-            // In std mode, we simulate the hardware
+            // En mode std, nous simulons le hardware
             return Ok(());
         }
 
         #[cfg(not(feature = "std"))]
         {
-            // Check for Intel VT-d or AMD IOMMU
+            // Vérifier la disponibilité de l'IOMMU
             let iommu_available = DmaManager::detect_iommu()?;
 
             if iommu_available {
-                // Initialize the IOMMU
-
-                // 1. Find DMAR ACPI table
+                // Initialiser l'IOMMU
                 let mut dmar_table = find_acpi_dmar_table()
-                    .ok_or("DMAR table not found")?;
+                    .ok_or("Table DMAR non trouvée")?;
 
-                // 2. Parse DMAR table to find DRHDs (DMA Remapping Hardware Units)
+                // Analyser la table DMAR
                 DmaManager::parse_drhd_units(&mut dmar_table)?;
 
-                // 3. Configure global IOMMU settings
-                DmaManager::configure_global_iommu()?;
+                // Configurer l'IOMMU global
+                if let Err(e) = DmaManager::configure_global_iommu() {
+                    log::warn!("Échec de la configuration de l'IOMMU: {}", e);
+                    return Ok(());  // Continuer sans IOMMU
+                }
 
-                // 4. Set up DMA remapping tables
-                DmaManager::setup_dma_remapping_tables()?;
+                // Configurer les tables de remapping DMA
+                if let Err(e) = DmaManager::setup_dma_remapping_tables() {
+                    log::warn!("Échec de la configuration des tables de remapping: {}", e);
+                    return Ok(());  // Continuer sans tables de remapping
+                }
 
-                // Update IOMMU status
+                // Mettre à jour le statut de l'IOMMU
                 let mut iommu_info = IOMMU_INFO.write();
                 iommu_info.available = true;
                 iommu_info.initialized = true;
-                iommu_info.is_intel = true; // Since we're using VT-d
+                iommu_info.is_intel = true;
 
                 #[cfg(feature = "log")]
-                log::info!("IOMMU initialized successfully");
+                log::info!("IOMMU initialisé avec succès");
             } else {
                 #[cfg(feature = "log")]
-                log::info!("No IOMMU detected, using direct DMA");
+                log::info!("Aucun IOMMU détecté, utilisation du DMA direct");
+            }
+        }
+
+        Ok(())
+    }
+
+    pub fn map_range_safely(
+        mapper: &mut impl Mapper<Size4KiB>,
+        start_page: Page<Size4KiB>,
+        end_page: Page<Size4KiB>,
+        frame_allocator: &mut impl FrameAllocator<Size4KiB>,
+        flags: PageTableFlags
+    ) -> Result<(), MemoryError> {
+        for page in Page::range_inclusive(start_page, end_page) {
+            // Vérifier si la page est déjà mappée
+            if let Ok(_) = mapper.translate_page(page) {
+                continue; // Page déjà mappée, passer à la suivante
+            }
+
+            // Allouer une frame physique
+            let frame = frame_allocator
+                .allocate_frame()
+                .ok_or(MemoryError::OutOfMemory)?;
+
+            // Mapper la page à la frame
+            match unsafe { mapper.map_to(page, frame, flags, frame_allocator) } {
+                Ok(tlb) => {
+                    tlb.flush();
+                },
+                Err(MapToError::FrameAllocationFailed) => {
+                    return Err(MemoryError::OutOfMemory);
+                },
+                Err(MapToError::PageAlreadyMapped(mapped_page)) => {
+                    // Continuer si la page est déjà mappée
+                    continue;
+                },
+                Err(_) => {
+                    return Err(MemoryError::InvalidMapping);
+                }
             }
         }
 
@@ -664,22 +733,51 @@ impl DmaManager {
     }
     
     /// Allocate a buffer suitable for DMA operations
-    pub fn allocate(&self, size: usize, options: DmaAllocOptions) -> Result<DmaBuffer, &'static str> {
-        if !self.initialized.load(Ordering::SeqCst) {
-            return Err("DMA manager not initialized");
+    pub fn allocate(
+        size: usize,
+        protection: MemoryProtection,
+        mem_type: MemoryType,
+        mapper: &mut (impl Mapper<Size4KiB> + Translate)
+    ) -> Result<VirtAddr, MemoryError> {
+        // Vérifier que la taille est valide
+        if size == 0 {
+            return Err(MemoryError::InvalidAddress);
         }
-        
-        // Implement allocation logic here
-        // This would typically:
-        // 1. Find a free region of physical memory
-        // 2. Map it to virtual memory if needed
-        // 3. Handle alignment requirements
-        // 4. For non-coherent memory, handle cache operations
-        
-        // Placeholder implementation
-        Err("DMA allocation not yet implemented")
+
+        // Calculer le nombre de pages nécessaires
+        let num_pages = (size + 4095) / 4096; // Arrondir au nombre de pages supérieur
+
+        // Trouver une plage d'adresses virtuelles contiguës
+        let start_virt_addr = VirtAddr::new(0x_7000_0000_0000); // Exemple d'adresse de départ
+
+        // Ici, nous obtenons une copie de PhysicalMemoryManager puisque la fonction
+        // get_physical_memory_manager() retourne une référence
+        let mut frame_allocator = physical::get_physical_memory_manager();
+
+        // Calculer les pages de début et de fin
+        let start_page = Page::containing_address(start_virt_addr);
+        let end_page = Page::containing_address(start_virt_addr + (num_pages * 4096) as u64 - 1u64);
+
+        // Configurer les flags de page
+        let mut flags = PageTableFlags::PRESENT;
+        if protection.write {
+            flags |= PageTableFlags::WRITABLE;
+        }
+        if protection.user {
+            flags |= PageTableFlags::USER_ACCESSIBLE;
+        }
+        if !protection.execute {
+            flags |= PageTableFlags::NO_EXECUTE;
+        }
+
+        if let Err(e) = Self::map_range_safely(mapper, start_page, end_page, frame_allocator, flags) {
+            log::error!("Failed to map memory range: {:?}", e);
+            return Err(e);
+        }
+
+        Ok(start_virt_addr)
     }
-    
+
     /// Free a previously allocated DMA buffer
     pub fn free(&self, buffer: DmaBuffer) -> Result<(), &'static str> {
         if !self.initialized.load(Ordering::SeqCst) {
@@ -715,23 +813,199 @@ impl DmaManager {
 // Create a global DMA manager instance
 pub static DMA_MANAGER: DmaManager = DmaManager::new();
 
-/// Allocate a DMA memory region with specific requirements
+pub fn get_memory_info() -> MemoryInfo {
+    #[cfg(feature = "std")]
+    {
+        // En mode std, nous utilisons des valeurs simulées
+        MemoryInfo {
+            total_ram: 1024 * 1024 * 1024, // 1GB
+            free_ram: 512 * 1024 * 1024,   // 512MB
+            used_ram: 512 * 1024 * 1024,   // 512MB
+            reserved_ram: 0,
+            kernel_size: 8 * 1024 * 1024, // 8MB
+            page_size: 4096,
+        }
+    }
+
+    #[cfg(not(feature = "std"))]
+    {
+        let pmm = physical::get_physical_memory_manager();
+
+        MemoryInfo {
+            total_ram: pmm.total_memory(),
+            free_ram: pmm.free_memory(),
+            used_ram: pmm.used_memory(),
+            reserved_ram: pmm.reserved_memory(),
+            kernel_size: pmm.kernel_size(),
+            page_size: 4096,
+        }
+    }
+}
+
+/// Allocate a contiguous region of physical memory suitable for DMA and maps it
+/// into the kernel's virtual address space.
+///
+/// # Arguments
+///
+/// * `size`: The size of the region to allocate in bytes.
+/// * `limit`: The physical address limit for the allocation (e.g., below 16MB or 4GB).
+/// * `alignment`: The required alignment for the physical address.
+///
+/// # Returns
+///
+/// A `Result` containing the `DmaRegion` on success, or an error message string
+/// on failure.
 fn allocate_dma_region(
     size: usize,
     limit: DmaAddressLimit,
-    alignment: usize
+    alignment: usize,
 ) -> Result<DmaRegion, &'static str> {
-    // Implementation depends on your physical memory manager
-    // This would find a region of physical memory that meets the address limits
-    
-    // For now, return a simulated region
-    Ok(DmaRegion {
-        phys_addr: 0x1000000, // Example physical address
-        virt_addr: 0xFFFF800001000000, // Example virtual address
+    // Vérifier si suffisamment de mémoire est disponible avant d'allouer
+    let memory_info = get_memory_info();
+
+    // Ajouter de la marge pour les frais généraux de mapping
+    let required_memory = size + (size / 10); // Ajouter 10% pour les frais généraux
+
+    if memory_info.free_ram < required_memory {
+        return Err("Pas assez de mémoire disponible pour l'allocation DMA");
+    }
+
+    let physical_limit_opt = limit.as_physical_limit();
+
+    let phys_addr_type = physical::allocate_contiguous_dma(size, alignment, physical_limit_opt.iter().len())
+        .ok_or("Échec de l'allocation de mémoire physique contiguë pour le DMA")?;
+
+    let protection = MemoryProtection {
+        read: true,
+        write: true,
+        execute: false,
+        user: false,
+        cache_type: CacheType::WriteCombining,
+    };
+
+    let mut mapper = MAPPER.lock();
+    let virt_addr = r#virtual::map_physical_region(
+        phys_addr_type,
         size,
-        dma_type: DmaType::Coherent, // Example type
+        protection,
+        MemoryType::DMA,
+        &mut *mapper,
+    )
+        .map_err(|_| "Échec du mapping de la mémoire DMA physique vers l'adresse virtuelle")?;
+
+    Ok(DmaRegion {
+        phys_addr: phys_addr_type.as_u64() as usize,
+        virt_addr: virt_addr.as_u64() as usize,
+        size,
+        dma_type: DmaType::Coherent,
         limit,
     })
+}
+
+fn cleanup_failed_dma_mapping(
+    start_addr: VirtAddr,
+    current_addr: VirtAddr,
+    page_size: usize,
+    mapper: &mut impl x86_64::structures::paging::Mapper<Size4KiB>,
+) {
+    let mut addr = start_addr;
+    while addr < current_addr {
+        let page = Page::containing_address(addr);
+        unsafe {
+            // Ignorer les erreurs pendant le nettoyage
+            let _ = mapper.unmap(page);
+        }
+        addr += page_size.try_into().unwrap();
+    }
+}
+
+pub fn free_dma_region(region: DmaRegion) -> Result<(), MemoryError> {
+    let page_size = 4096;
+    let num_pages = region.size / page_size;
+
+    // Démapper les pages virtuelles
+    let mut mapper = MAPPER.lock();
+    let mut current_virt = region.virt_addr;
+
+    for _ in 0..num_pages {
+        let page = Page::<Size4KiB>::containing_address(VirtAddr::new(current_virt as u64));
+
+        unsafe {
+            // Ignorer les erreurs si la page n'est pas mappée
+            let _ = mapper.unmap(page);
+        }
+
+        current_virt += page_size;
+    }
+
+    // Libérer les frames physiques
+    let physical_memory_manager = physical::get_physical_memory_manager();
+    let frames_to_free = num_pages;
+    physical_memory_manager.free_frames(PhysAddr::new(region.phys_addr as u64), frames_to_free);
+
+    Ok(())
+}
+
+pub fn write_to_dma(region: &DmaRegion, data: &[u8], offset: usize) -> Result<(), MemoryError> {
+    if offset + data.len() > region.size {
+        return Err(MemoryError::OutOfMemory);
+    }
+
+    let dst_ptr = unsafe { (region.virt_addr as *mut u8).add(offset) };
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(data.as_ptr(), dst_ptr, data.len());
+    }
+
+    Ok(())
+}
+
+/// Lit des données depuis une région DMA
+pub fn read_from_dma(region: &DmaRegion, buffer: &mut [u8], offset: usize) -> Result<(), MemoryError> {
+    if offset + buffer.len() > region.size {
+        return Err(MemoryError::OutOfMemory);
+    }
+
+    let src_ptr = unsafe { (region.virt_addr as *const u8).add(offset) };
+
+    unsafe {
+        core::ptr::copy_nonoverlapping(src_ptr, buffer.as_mut_ptr(), buffer.len());
+    }
+
+    Ok(())
+}
+
+/// Synchronise une région DMA avec la mémoire principale (utile pour les caches)
+pub fn sync_dma_for_device(region: &DmaRegion) {
+    // Vider le cache CPU pour cette région
+    unsafe {
+        for offset in (0..region.size).step_by(64) {
+            let addr = region.virt_addr + offset;
+            x86_64::instructions::tlb::flush(VirtAddr::new(addr.try_into().unwrap()));
+        }
+    }
+}
+
+/// Synchronise une région DMA après une opération DMA (pour le CPU)
+pub fn sync_dma_for_cpu(region: &DmaRegion) {
+    // Invalider le cache CPU pour cette région
+    unsafe {
+        for offset in (0..region.size).step_by(64) {
+            let addr = region.virt_addr + offset;
+            x86_64::instructions::tlb::flush(VirtAddr::new(addr.try_into().unwrap()));
+        }
+    }
+}
+
+impl From<DmaAddressLimit> for Option<u64> {
+    fn from(limit: DmaAddressLimit) -> Self {
+        match limit {
+            DmaAddressLimit::Limit16M => Some(0xFF_FFFF), // 16 MiB
+            DmaAddressLimit::Limit4G => Some(0xFFFF_FFFF), // 4 GiB
+            DmaAddressLimit::Custom(limit) => Some(limit),
+            DmaAddressLimit::None => None,
+        }
+    }
 }
 
 

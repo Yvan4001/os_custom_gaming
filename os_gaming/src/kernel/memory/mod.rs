@@ -13,34 +13,53 @@ pub mod allocator;
 use spin::Mutex;
 use lazy_static::lazy_static;
 use x86_64::structures::paging::{FrameAllocator, Mapper, PageSize, PageTableFlags};
+use x86_64::structures::paging::Translate;
 pub(crate) use memory_manager::{MemoryError, MemoryManager, PhysicalMemoryManager};
 use bootloader::BootInfo;
 use x86_64::PhysAddr;
 use core::sync::atomic::{AtomicBool, Ordering};
+use crate::kernel::memory::dma::DmaManager;
 use crate::kernel::memory::r#virtual::VirtualMemoryManager;
 
 // Create thread-safe static reference to the memory manager
 lazy_static! {
     static ref MEMORY_MANAGER: Mutex<MemoryManager> = Mutex::new(MemoryManager::new());
+    static ref DMA_MANAGER: Mutex<DmaManager> = Mutex::new(DmaManager::new());
 }
 
 /// Initialize memory management subsystem
 pub fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
-    // Vérifier si une page est déjà mappée avant d'essayer de la mapper
-    let phys_mem_offset = boot_info.physical_memory_offset;
-    crate::kernel::memory::allocator::set_memory_offset_info(phys_mem_offset);
-
-    // Utiliser un verrou pour éviter les initialisations multiples
+    // Use a lock to prevent multiple initializations
     static INITIALIZED: AtomicBool = AtomicBool::new(false);
-    if INITIALIZED.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
-        // Déjà initialisé, ne rien faire
+
+    // If already initialized, return immediately
+    if INITIALIZED.load(Ordering::SeqCst) {
         return Ok(());
     }
 
-    // Initialiser le gestionnaire de mémoire avec vérification des mappages existants
-    MemoryManager::init(boot_info)?;
+    // Get the physical memory offset
+    let phys_mem_offset = boot_info.physical_memory_offset;
 
-    Ok(())
+    // Configure the offset information in the allocator
+    crate::kernel::memory::allocator::set_memory_offset_info(phys_mem_offset);
+
+    // Initialize the memory manager
+    let result = MemoryManager::init(boot_info);
+
+    // Mark as initialized only on success
+    if result.is_ok() {
+        INITIALIZED.store(true, Ordering::SeqCst);
+    }
+
+    // Initialize IOMMU if available
+    if result.is_ok() {
+        if let Err(e) = DMA_MANAGER.lock().initialize_iommu() {
+            log::warn!("IOMMU not available or initialization failed: {}", e);
+            // Don't fail the entire initialization if IOMMU fails
+        }
+    }
+
+    result
 }
 
 
@@ -63,13 +82,15 @@ pub fn free_virtual(ptr: *mut u8) {
 
 /// Map physical memory to virtual address space
 pub fn map_physical(
-    phys_addr: x86_64::PhysAddr,  // Changé de PhysicalMemoryManager à PhysAddr
+    phys_addr: x86_64::PhysAddr,
     size: usize,
     flags: PageTableFlags,
-    mapper: &mut impl Mapper<x86_64::structures::paging::Size4KiB>,
+    // Ajouter la contrainte + Translate ici
+    mapper: &mut (impl Mapper<x86_64::structures::paging::Size4KiB> + Translate),
     allocator: &mut impl FrameAllocator<x86_64::structures::paging::Size4KiB>
 ) -> Result<*mut u8, MemoryError> {
     let mut manager = MEMORY_MANAGER.lock();
+    // L'appel ici est maintenant correct car `mapper` a la contrainte Translate
     manager.map_physical(phys_addr, size, flags, mapper, allocator)
         .map(|virt_addr| virt_addr.as_mut_ptr())
 }
