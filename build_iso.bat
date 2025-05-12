@@ -6,8 +6,9 @@ cd /d %~dp0
 
 :: Variable configuration
 set RUSTFLAGS=-Z force-unstable-if-unmarked
-set PROJECT_NAME=fluxGridOs
-set TARGET_SPEC=x86_64-fluxGridOs
+set PROJECT_NAME=FluxGrid
+set TARGET_SPEC=x86_64-fluxgrid_os
+set TARGET_JSON=%TARGET_SPEC%.json
 
 echo 🔧 Configuring build environment...
 
@@ -22,100 +23,79 @@ if errorlevel 1 (
 rustup default nightly
 rustup component add rust-src
 rustup component add llvm-tools-preview
+cargo install bootimage
 
-:: Copy memory map to the correct location for the build process
-echo 📝 Setting up memory map...
-mkdir target 2>NUL
-if not exist "memory-map.txt" (
-    echo Creating memory-map.txt...
-    (
-        echo /* Memory map for custom OS */
-        echo MEMORY
-        echo {
-        echo   /* Reserved region - problematic address we want to avoid */
-        echo   RESERVED (r^) ^: ORIGIN = 0x400000, LENGTH = 0x1000
-        echo   /* Code region - where our kernel code will be placed */
-        echo   CODE (rx^) ^: ORIGIN = 0x100000, LENGTH = 0x300000
-        echo   /* Data region - for stack, heap, etc */
-        echo   DATA (rw^) ^: ORIGIN = 0x500000, LENGTH = 0x300000
-        echo }
-        echo SECTIONS
-        echo {
-        echo   /* Place .text in CODE region, not in RESERVED */
-        echo   .text ^: { *(.text*^) } ^> CODE
-        echo   /* Place other sections in DATA region */
-        echo   .rodata ^: { *(.rodata*^) } ^> DATA
-        echo   .data ^: { *(.data*^) } ^> DATA
-        echo   .bss ^: { *(.bss*^) } ^> DATA
-        echo }
-    ) > memory-map.txt
-)
-copy memory-map.txt target\memory-map.txt
-set RUSTFLAGS=%RUSTFLAGS% -C link-arg=--script=%CD%\target\memory-map.txt
-
-echo 🚀 Building kernel...
-:: Build with core library from source
-cargo build -Z build-std=core,alloc,compiler_builtins -Z build-std-features=compiler-builtins-mem --target %TARGET_SPEC%.json -Z unstable-options --features bootloader-custom-config
-
+:: Check for ISO creation tools
+where xorriso >nul 2>&1
 if errorlevel 1 (
-    echo ❌ Kernel build failed
-    exit /b 1
+    echo ⚠️ xorriso not found - ISO creation might fail
 )
 
-echo 📦 Creating bootimage...
-:: Create bootimage with the same flags and custom config
-cargo bootimage --target %TARGET_SPEC%.json --features bootloader-custom-config
+echo 🚀 Building kernel with bootimage...
+cargo +nightly bootimage ^
+    -Z build-std=core,alloc,compiler_builtins ^
+    -Z build-std-features=compiler-builtins-mem ^
+    --target %TARGET_JSON% ^
+    -Z unstable-options
+
 if errorlevel 1 (
     echo ❌ Bootimage creation failed
     exit /b 1
 )
 
+echo ✅ Bootimage created successfully
 
-:: --- ISO Creation Steps ---
-echo 📁 Preparing directories...
-set BUILD_DIR=target\%TARGET_SPEC%\debug
-set ISO_DIR=%BUILD_DIR%\iso
-set BOOT_DIR=%ISO_DIR%\boot
-set GRUB_DIR=%BOOT_DIR%\grub
+echo 📀 Creating ISO file...
+:: Create ISO directory structure
+if exist iso_root rmdir /s /q iso_root
+mkdir iso_root\boot\grub
 
-:: Clean and create directories
-if exist %ISO_DIR% rd /s /q %ISO_DIR%
-mkdir %ISO_DIR% %BOOT_DIR% %GRUB_DIR%
+:: Copy bootimage to ISO directory
+copy target\%TARGET_SPEC%\debug\bootimage-fluxgridOs.bin iso_root\boot\
 
-:: Copy the bootimage
-copy %BUILD_DIR%\bootimage-%PROJECT_NAME%.bin %BOOT_DIR%\kernel.bin
+:: Create GRUB configuration
+(
+    echo set timeout=5
+    echo set default=0
+    echo.
+    echo menuentry "%PROJECT_NAME% OS" {
+    echo     multiboot2 /boot/bootimage-fluxgridOs.bin
+    echo     boot
+    echo }
+) > iso_root\boot\grub\grub.cfg
+
+:: Generate ISO (requires xorriso/grub-mkrescue for Windows)
+grub-mkrescue -o %PROJECT_NAME%.iso iso_root
+
 if errorlevel 1 (
-    echo ❌ Failed to copy kernel binary
+    echo ❌ ISO creation failed
     exit /b 1
 )
 
-:: Create GRUB config
-(
-    echo set timeout=3
-    echo set default=0
-    echo menuentry "OS Gaming" {
-    echo     multiboot /boot/kernel.bin
-    echo     boot
-    echo }
-) > %GRUB_DIR%\grub.cfg
+echo ✅ ISO created successfully: %PROJECT_NAME%.iso
 
-echo ✅ Build completed successfully
+echo 🚀 Show os when QEMU launches
+echo Run the QEMU command below to launch your OS:
 
-echo 📋 Available QEMU test commands:
+echo 🚀 For running in QEMU:
+echo qemu-system-x86_64 -m 1G ^
+    -serial stdio ^
+    -drive format=raw,file=target\%TARGET_SPEC%\debug\bootimage-fluxgridOs.bin ^
+    -no-reboot ^
+    -no-shutdown
 
-echo 🔵 Standard boot command:
-echo qemu-system-x86_64 -drive format=raw,file=target/%TARGET_SPEC%/debug/bootimage-%PROJECT_NAME%.bin
+echo.
+echo 🚀 For running with Docker (if Docker Desktop is installed):
+echo docker run --rm -v "%CD%:/data" ^
+    --privileged ^
+    -p 5900:5900 ^
+    tianon/qemu ^
+    qemu-system-x86_64 -m 1G ^
+    -display vnc=0.0.0.0:0 ^
+    -serial stdio ^
+    -drive format=raw,file=/data/target/%TARGET_SPEC%/debug/bootimage-fluxgridOs.bin ^
+    -no-reboot ^
+    -no-shutdown
 
-echo 🔵 Enhanced boot command with memory protection:
-echo qemu-system-x86_64 -m 256M -machine q35 -drive format=raw,file=target/%TARGET_SPEC%/debug/bootimage-%PROJECT_NAME%.bin
-
-echo 🔵 Debug boot command with memory exclusion:
-echo qemu-system-x86_64 -m 256M -machine q35 -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 -drive format=raw,file=target/%TARGET_SPEC%/debug/bootimage-%PROJECT_NAME%.bin
-
-echo 🔵 Full diagnostic boot command:
-echo qemu-system-x86_64 -m 256M -machine q35 -no-reboot -device isa-debug-exit,iobase=0xf4,iosize=0x04 -serial stdio -monitor stdio -d int,guest_errors,cpu_reset -D qemu.log -drive format=raw,file=target/%TARGET_SPEC%/debug/bootimage-%PROJECT_NAME%.bin
-
-
-echo 📦 Check if bootable image created:
-dir target\%TARGET_SPEC%\debug\bootimage-%PROJECT_NAME%.bin
-endlocal
+echo.
+echo Connect with VNC viewer at localhost:5900 after running the Docker command

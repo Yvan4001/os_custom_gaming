@@ -2,7 +2,7 @@
 set -e
 
 # Variable configuration
-PROJECT_NAME="fluxgridOs"
+PROJECT_NAME="FluxGrid"
 TARGET_SPEC="x86_64-fluxgrid_os"
 TARGET_JSON="$TARGET_SPEC.json"
 
@@ -12,6 +12,9 @@ echo "🔧 Configuring build environment..."
 rustup component add rust-src --toolchain nightly
 rustup component add llvm-tools-preview --toolchain nightly
 cargo install bootimage
+
+# Ensure ISO creation dependencies
+apt-get update && apt-get install -y xorriso grub-pc-bin mtools
 
 # Force system to use APT version of QEMU
 export PATH="/usr/bin:$PATH"
@@ -33,6 +36,34 @@ fi
 
 echo "✅ Bootimage created successfully"
 
+echo "📀 Creating ISO file..."
+# Create ISO directory structure
+mkdir -p iso_root/boot/grub
+
+# Copy bootimage to ISO directory
+cp target/$TARGET_SPEC/debug/bootimage-fluxgridOs.bin iso_root/boot/
+
+# Create GRUB configuration
+cat > iso_root/boot/grub/grub.cfg << EOF
+set timeout=5
+set default=0
+
+menuentry "$PROJECT_NAME OS" {
+    multiboot2 /boot/bootimage-fluxgridOs.bin
+    boot
+}
+EOF
+
+# Generate ISO
+grub-mkrescue -o $PROJECT_NAME.iso iso_root
+
+if [ $? -ne 0 ]; then
+    echo "❌ ISO creation failed"
+    exit 1
+fi
+
+echo "✅ ISO created successfully: $PROJECT_NAME.iso"
+
 echo "🚀 Show os when docker launch"
 echo "vncviewer localhost:5900"
 
@@ -44,4 +75,6 @@ sudo docker run --rm -v "$(pwd):/data" \
     qemu-system-x86_64 -m 1G \
     -display vnc=0.0.0.0:0 \
     -serial stdio \
-    -drive format=raw,file=/data/target/x86_64-fluxgrid_os/debug/bootimage-fluxgridOs.bin
+    -drive format=raw,file=/data/target/$TARGET_SPEC/debug/bootimage-fluxgridOs.bin \
+    -no-reboot \
+    -no-shutdown

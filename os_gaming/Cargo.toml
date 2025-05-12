@@ -32,6 +32,7 @@ micromath = { version = "0.5.1", default-features = false }
 x86_64 = { version = "^0.15.2", features = ["abi_x86_interrupt"] }
 
 [package.metadata.bootimage]
+default-target = "x86_64-fluxgrid_os"
 # Use a different physical memory offset
 physical-memory-offset = "0x6000_0000"
 

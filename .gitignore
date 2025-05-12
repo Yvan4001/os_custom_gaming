@@ -21,3 +21,4 @@ build/
 
 *.iso
 .[cC]argo/
+iso_root/
