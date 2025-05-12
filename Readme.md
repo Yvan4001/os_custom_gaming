@@ -16,7 +16,7 @@ OS Custom Gaming is a from-scratch operating system kernel designed specifically
 - **Gaming profiles**: Support for different optimization profiles
 
 ## Architecture
-
+```bash
 ┌────────────────────────────────────────────────┐
 │                  Applications                   │
 └───────────────────────┬────────────────────────┘
@@ -36,7 +36,7 @@ OS Custom Gaming is a from-scratch operating system kernel designed specifically
 ┌────────────────────────┴─┐   ┌───────────────┴─┐
 │     System Hardware      │   │       BIOS       │
 └──────────────────────────┘   └─────────────────┘
-
+```
 
 ## High-Level Architecture
 
@@ -106,6 +106,7 @@ The memory management subsystem is composed of several specialized components:
 
 The driver architecture follows a layered approach:
 
+```bash
 ┌─────────────────────────────────────────┐
 │            Driver Interface              │
 └───────────────┬─────────────────────────┘
@@ -119,7 +120,7 @@ The driver architecture follows a layered approach:
 │  │  Video  │  │  │ Storage │  │  ACPI  │ │
 │  └─────────┘  │  └─────────┘  └────────┘ │
 └───────────────┴─────────────────────────┘
-
+```
 
 - **GPU Drivers**
   - Hardware-specific implementations (NVIDIA)
