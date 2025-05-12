@@ -135,6 +135,7 @@ The driver architecture follows a layered approach:
 - **Input Handling**
   - Keyboard and mouse drivers
   - Event processing
+  - Gamepad support
 
 ### Configuration System
 
