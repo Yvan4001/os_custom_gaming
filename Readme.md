@@ -207,4 +207,4 @@ Contributions are welcome! Please check the issues list for tasks that need help
 
 ## License
 
-This project is distributed under the Apache-2.0 License. See the [LICENSE](LICENSE) file for details.
+This project is distributed under a custom open source license that restricts distribution channels and commercial use. See the [LICENSE](LICENSE) file for details.
