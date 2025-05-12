@@ -101,11 +101,11 @@ pub fn init_fonts() -> Result<(), &'static str> {
 
     // Define font paths - adjust these to actual paths in your filesystem
     let system_font_paths = [
-        "/usr/share/fonts/os_gaming/system_regular.ttf",
-        "/usr/share/fonts/os_gaming/system_bold.ttf",
-        "/usr/share/fonts/os_gaming/system_italic.ttf",
-        "/usr/share/fonts/os_gaming/monospace.ttf",
-        "/usr/share/fonts/os_gaming/gaming.ttf",
+        "/usr/share/fonts/fluxGridOs/system_regular.ttf",
+        "/usr/share/fonts/fluxGridOs/system_bold.ttf",
+        "/usr/share/fonts/fluxGridOs/system_italic.ttf",
+        "/usr/share/fonts/fluxGridOs/monospace.ttf",
+        "/usr/share/fonts/fluxGridOs/gaming.ttf",
     ];
 
     // Try to load the system fonts

@@ -840,7 +840,7 @@ impl fmt::Display for ConfigError {
 /// Load system configuration from file
 pub fn load_system_config() -> Result<SystemConfig, ConfigError> {
     // Try to open the config file (using the binary extension)
-    let config_path = "/etc/os_gaming/config.bin"; // Use matching path from save function
+    let config_path = "/etc/fluxGridOs/config.bin"; // Use matching path from save function
 
     // Create a new filesystem manager
     let fs_manager = filesystem::FilesystemManager::new();
@@ -920,7 +920,7 @@ pub fn save_system_config(config: &SystemConfig) -> Result<(), ConfigError> {
     let mut fs_manager = filesystem::FilesystemManager::new();
 
     // Create directory
-    let dir_path = "/etc/os_gaming";
+    let dir_path = "/etc/fluxGridOs";
     // Use if let Err(_) = ... to avoid unused result warning if create_directory returns Result<(), _>
     if let Err(e) = fs_manager.create_directory(dir_path) {
         // Log the specific error if possible, e.g., log::warn!("Failed to create config directory {}: {:?}", dir_path, e);
@@ -930,7 +930,7 @@ pub fn save_system_config(config: &SystemConfig) -> Result<(), ConfigError> {
     }
 
     // Write to file (consider changing extension from .toml to .bin or .cfg)
-    let config_path = "/etc/os_gaming/config.bin"; // Changed extension
+    let config_path = "/etc/fluxGridOs/config.bin"; // Changed extension
     match fs_manager.open_file(config_path, true) {
         // Use enum for clarity if available
         Ok(mut file) => {

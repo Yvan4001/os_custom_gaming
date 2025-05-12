@@ -1,4 +1,4 @@
-# OS Custom Gaming
+# FluxGridOS
 
 A custom operating system kernel optimized for gaming, written in Rust.
 
@@ -26,7 +26,7 @@ OS Custom Gaming is a from-scratch operating system kernel designed specifically
 └───────────────────────┬────────────────────────┘
 │
 ┌───────────────────────┴────────────────────────┐
-│                  OS Gaming Kernel               │
+│                  FluxGrid Kernel               │
 ├────────────────┬──────────────┬────────────────┤
 │ Memory Manager │  Scheduler   │ Device Drivers  │
 ├────────────────┴──────────────┴────────────────┤
@@ -167,7 +167,7 @@ The configuration system uses bincode serialization to store system settings per
 2. Build the kernel:
 
    ```sh
-   cargo build --target x86_64-os_gaming.json
+   cargo build --target x86_64-fluxGridOs.json
    ```
 
 3. Create bootable disk image:

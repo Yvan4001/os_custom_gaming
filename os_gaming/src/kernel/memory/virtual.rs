@@ -68,7 +68,6 @@ impl VirtualMemoryManager {
         Ok(VirtAddr::new(addr as u64))
     }
     
-    /// Map physical memory to a specific virtual address
     pub fn map_memory(&self,
         virt_addr: VirtAddr,
         phys_addr: PhysAddr,
@@ -76,68 +75,80 @@ impl VirtualMemoryManager {
         mapper: &mut OffsetPageTable,
         protection: MemoryProtection,
         mem_type: MemoryType) -> Result<(), MemoryError> {
-        #[cfg(feature = "std")]
-        {
-            // In std mode, we just simulate mapping
-            Ok(())
-        }
-
+    
         #[cfg(not(feature = "std"))]
         {
             // Round size up to page size
             let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
             let size = pages * PAGE_SIZE;
-
-            let _mapper = crate::kernel::memory::allocator::MAPPER.lock();
-
+    
+            // Don't lock mapper here - we're using the one passed in
+            // let _mapper = crate::kernel::memory::allocator::MAPPER.lock();
+    
             // Convert protection to PageTableFlags
             let mut flags = PageTableFlags::PRESENT;
-
-            if protection.write {
-                flags |= PageTableFlags::WRITABLE;
-            }
-            if !protection.execute {
-                flags |= PageTableFlags::NO_EXECUTE;
-            }
-            if protection.user {
-                flags |= PageTableFlags::USER_ACCESSIBLE;
-            }
-
+            if protection.write { flags |= PageTableFlags::WRITABLE; }
+            if !protection.execute { flags |= PageTableFlags::NO_EXECUTE; }
+            if protection.user { flags |= PageTableFlags::USER_ACCESSIBLE; }
+    
             // Set cache type
             match protection.cache_type {
-                CacheType::Uncacheable => {
-                    flags |= PageTableFlags::NO_CACHE;
-                }
-                CacheType::WriteThrough => {
-                    flags |= PageTableFlags::WRITE_THROUGH;
-                }
+                CacheType::Uncacheable => { flags |= PageTableFlags::NO_CACHE; }
+                CacheType::WriteThrough => { flags |= PageTableFlags::WRITE_THROUGH; }
                 _ => {} // Default caching
             }
-
+    
+            // Log the mapping attempt for debugging
+            log::debug!("Mapping {:?} bytes from phys {:?} to virt {:?} with flags {:?}",
+                size, phys_addr, virt_addr, flags);
+    
             // Map the pages
-            let page_table = current_page_table();
-
             for i in 0..pages {
                 let page_virt = VirtAddr::new(virt_addr.as_u64() + (i * PAGE_SIZE) as u64);
                 let page_phys = PhysAddr::new(phys_addr.as_u64() + (i * PAGE_SIZE) as u64);
-
+                
+                // Skip low memory addresses (prevent conflicts with bootloader) 
+                if page_virt.as_u64() < 0x10000 {
+                    log::warn!("Skipping low memory mapping at {:?}", page_virt);
+                    continue;
+                }
+                
                 let page = Page::<Size4KiB>::containing_address(page_virt);
+                
+                // Check if page is already mapped
+                if let Ok(frame) = mapper.translate_page(page) {
+                    if frame.start_address() == page_phys {
+                        log::debug!("Page {:?} already mapped to correct frame", page);
+                        continue;
+                    } else {
+                        log::warn!("Page {:?} already mapped to {:?}, remapping to {:?}",
+                            page, frame.start_address(), page_phys);
+                        
+                        // Try to unmap first - but continue even if it fails
+                        unsafe {
+                            match mapper.unmap(page) {
+                                Ok((_frame, flush)) => flush.flush(),
+                                Err(err) => log::warn!("Failed to unmap page {:?}: {:?}", page, err),
+                            }
+                        }
+                    }
+                }
+    
                 let frame = PhysFrame::containing_address(page_phys);
-
+    
+                // Try mapping but handle errors better
                 unsafe {
-                    // Create an offset page table using the current page table
-                    // Map the page
-                    mapper.map_to(
-                        page,
-                        frame,
-                        flags,
-                        &mut FrameAllocImpl
-                    )
-                    .map_err(|_| MemoryError::AllocationFailed)?
-                    .flush();
+                    match mapper.map_to(page, frame, flags, &mut FrameAllocImpl) {
+                        Ok(flush) => flush.flush(),
+                        Err(err) => {
+                            log::error!("Failed to map page {:?} to frame {:?}: {:?}", 
+                                page, frame, err);
+                            return Err(MemoryError::AllocationFailed);
+                        }
+                    }
                 }
             }
-
+    
             Ok(())
         }
     }

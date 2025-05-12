@@ -6,8 +6,8 @@ cd /d %~dp0
 
 :: Variable configuration
 set RUSTFLAGS=-Z force-unstable-if-unmarked
-set PROJECT_NAME=os_gaming
-set TARGET_SPEC=x86_64-os_gaming
+set PROJECT_NAME=fluxGridOs
+set TARGET_SPEC=x86_64-fluxGridOs
 
 echo 🔧 Configuring build environment...
 
