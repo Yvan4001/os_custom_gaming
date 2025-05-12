@@ -1,0 +1,19 @@
+/* Memory map for custom OS */
+MEMORY
+{
+  /* Reserved region - problematic address we want to avoid */
+  RESERVED (r) : ORIGIN = 0x400000, LENGTH = 0x1000
+  /* Code region - where our kernel code will be placed */
+  CODE (rx) : ORIGIN = 0x100000, LENGTH = 0x300000
+  /* Data region - for stack, heap, etc */
+  DATA (rw) : ORIGIN = 0x500000, LENGTH = 0x300000
+}
+SECTIONS
+{
+  /* Place .text in CODE region, not in RESERVED */
+  .text : { *(.text*) } > CODE
+  /* Place other sections in DATA region */
+  .rodata : { *(.rodata*) } > DATA
+  .data : { *(.data*) } > DATA
+  .bss : { *(.bss*) } > DATA
+}

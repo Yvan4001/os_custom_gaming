@@ -35,10 +35,10 @@ use log::{info, error}; // Garder les imports log
 // Déclaration des modules locaux (supprimer la version conditionnelle de gui si non nécessaire)
 pub mod config;
 pub mod kernel;
-pub mod gui; // Garder la version inconditionnelle si gui est toujours requis
+pub mod gui;
 pub mod system;
 pub mod logger;
-// #[cfg(feature = "std")] // Supprimer si gui est toujours requis
+pub mod bootloaderCustom;
 
 // System constants
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -139,4 +139,8 @@ pub fn hcf() -> ! {
         x86_64::instructions::hlt(); // Instruction pour arrêter le CPU jusqu'à la prochaine interruption
     }
 }
+
+
+
+#[cfg(not(feature = "bootloader-custom-config"))]
 entry_point!(kernel_main);

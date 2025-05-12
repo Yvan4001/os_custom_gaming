@@ -35,4 +35,6 @@ x86_64 = { version = "^0.15.2", features = ["abi_x86_interrupt"] }
 [features]
 default = ["no_std"]
 no_std = []
+bootloader-custom-config = []
+bootloader-config = ["bootloader-custom-config"]  # You can make this an alias
 

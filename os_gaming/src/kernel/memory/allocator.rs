@@ -70,7 +70,7 @@ unsafe impl FrameAllocator<Size4KiB> for BootFrameAllocator {
 
         get_physical_memory_manager()
             .allocate_frame()
-            .map(PhysFrame::containing_address)
+            .map(|frame| frame)
     }
 }
 
@@ -111,16 +111,16 @@ impl KernelHeapAllocator {
 
             // Allocate memory for the heap, en passant le mapper
             let heap_start = match super::r#virtual::allocate( // Changed from virtual_mem
-                                                               size,
-                                                               MemoryProtection {
-                                                                   read: true,
-                                                                   write: true,
-                                                                   execute: false,
-                                                                   user: false,
-                                                                   cache_type: CacheType::WriteBack,
-                                                               },
-                                                               MemoryType::Normal,
-                                                               &mut *mapper_guard, // Passer une référence mutable au contenu du MutexGuard
+                size,
+                MemoryProtection {
+                    read: true,
+                    write: true,
+                    execute: false,
+                    user: false,
+                    cache_type: CacheType::WriteBack,
+                },
+                MemoryType::Normal,
+                &mut *mapper_guard,
             ) {
                 Ok(addr) => addr,
                 Err(_) => return Err("Failed to allocate heap memory"),
@@ -246,7 +246,7 @@ pub fn set_memory_offset_info(physical_memory_offset: u64) {
     }
 }
 
-// Utilisez cette fonction pour obtenir le décalage lors de l'initialisation du mappeur
+// Use this function to get the physical memory offset
 pub fn get_physical_memory_offset() -> VirtAddr {
     unsafe {
         VirtAddr::new(PHYSICAL_MEMORY_OFFSET.expect("L'offset de mémoire physique n'a pas été initialisé"))
@@ -274,21 +274,36 @@ pub fn init_heap() -> Result<(), MapToError<Size4KiB>> {
     let mut frame_allocator = BootFrameAllocator::new();
 
     for page in page_range {
-        // Vérifier si la page est déjà mappée avant de tenter de la mapper
+        // First check if the page is already mapped
         if let Ok(_) = mapper.translate_page(page) {
+            log::debug!("Page {:?} already mapped, skipping", page);
             continue;
         }
 
-        let frame = frame_allocator
-            .allocate_frame()
-            .ok_or(MapToError::FrameAllocationFailed)?;
+        // Get a fresh frame from the allocator
+        let frame = match frame_allocator.allocate_frame() {
+            Some(frame) => frame,
+            None => return Err(MapToError::FrameAllocationFailed),
+        };
 
         let flags = PageTableFlags::PRESENT | PageTableFlags::WRITABLE;
 
+        // Try to map the page to the frame
         unsafe {
-            mapper
-                .map_to(page, frame, flags, &mut frame_allocator)?
-                .flush();
+            match mapper.map_to(page, frame, flags, &mut frame_allocator) {
+                Ok(flush) => {
+                    flush.flush();
+                    log::trace!("Mapped page {:?} to frame {:?}", page, frame);
+                },
+                Err(MapToError::PageAlreadyMapped(_)) => {
+                    // If the page is already mapped (race condition), 
+                    // we need to free the frame we just allocated
+                    log::warn!("Page {:?} was mapped by another thread/process, freeing allocated frame", page);
+                    // Free the frame we allocated but couldn't use
+                    get_physical_memory_manager().free_frame(frame.start_address());
+                },
+                Err(e) => return Err(e),
+            }
         }
     }
 

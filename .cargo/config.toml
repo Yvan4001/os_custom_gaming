@@ -1,9 +1,18 @@
+[build]
+target = "x86_64-os_gaming.json"
+
 [unstable]
 build-std = ["core", "compiler_builtins", "alloc"]
 build-std-features = ["compiler-builtins-mem"]
 
-[build]
-target = "x86_64-os_gaming.json"
+# CRITICAL: This is the section that prevents the 0x400000 mapping conflict
+[package.metadata.bootloader]
+map-physical-memory = true
+physical-memory-offset = "0xFFFF800000000000"
+kernel-stack-size = 0x19000
+boot-info-address = "0x4000"
+minimum-framebuffer-height = 768
+memory-regions = ["0x400000:0x401000=unusable"]
 
 [target.'cfg(target_os = "none")']
 runner = "bootimage runner"

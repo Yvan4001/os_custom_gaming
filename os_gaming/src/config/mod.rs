@@ -1,7 +1,3 @@
-//! System configuration
-//!
-//! This module provides configuration management for the operating system,
-//! including loading/saving settings, profile management, and defaults.
 #![no_std]
 #![feature(alloc_error_handler)]
 extern crate alloc;

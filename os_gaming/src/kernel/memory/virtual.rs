@@ -70,12 +70,12 @@ impl VirtualMemoryManager {
     
     /// Map physical memory to a specific virtual address
     pub fn map_memory(&self,
-                     virt_addr: VirtAddr,
-                     phys_addr: PhysAddr,
-                     size: usize,
-                      mapper: &mut OffsetPageTable,
-                     protection: MemoryProtection,
-                     mem_type: MemoryType) -> Result<(), MemoryError> {
+        virt_addr: VirtAddr,
+        phys_addr: PhysAddr,
+        size: usize,
+        mapper: &mut OffsetPageTable,
+        protection: MemoryProtection,
+        mem_type: MemoryType) -> Result<(), MemoryError> {
         #[cfg(feature = "std")]
         {
             // In std mode, we just simulate mapping
@@ -325,7 +325,7 @@ struct FrameAllocImpl;
 unsafe impl FrameAllocator<Size4KiB> for FrameAllocImpl {
     fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
         let pmm = physical::get_physical_memory_manager();
-        pmm.allocate_frame().map(PhysFrame::containing_address)
+        pmm.allocate_frame()
     }
 }
 

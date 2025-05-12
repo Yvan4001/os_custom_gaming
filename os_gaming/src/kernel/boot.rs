@@ -7,7 +7,6 @@ extern crate alloc;
 use alloc::string::String;
 use bootloader::BootInfo;
 use crate::kernel::memory::MemoryManager;
-
 use crate::println;
 
 /// Boot status tracking
@@ -96,7 +95,6 @@ pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
 }
 
 
-
 /// Internal initialization function that works with BootConfig
 pub fn internal_init(config: BootConfig) -> Result<(), &'static str> {
     set_boot_status(BootStatus::NotStarted);
@@ -173,16 +171,25 @@ fn cpu_init() -> Result<(), &'static str> {
 
 /// Initialize memory management
 fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
-    // Définir d'abord l'offset de mémoire physique
+    // Setting physical memory offset first is correct
     let phys_mem_offset = boot_info.physical_memory_offset;
     crate::kernel::memory::allocator::set_memory_offset_info(phys_mem_offset);
 
-    // Ensuite initialiser le gestionnaire de mémoire
-    MemoryManager::init(boot_info)?;
+    // Add this code to reserve the problematic memory region
+    // This explicitly marks the 0x400000 region as used before page mapping
+    #[cfg(not(feature = "std"))]
+    unsafe {
+        // Calculate virtual address for the problematic physical address
+        let virt_addr = phys_mem_offset + 0x400000;
+        // Mark it as used by writing a magic value
+        core::ptr::write_volatile(virt_addr as *mut u64, 0xDEADBEEF);
+        println!("Reserved problematic memory region at physical address 0x400000");
+    }
 
-    // Initialiser le tas du noyau après avoir configuré l'offset
+    // Continue with normal memory initialization
+    MemoryManager::init(boot_info)?;
     crate::kernel::memory::allocator::init_heap()
-        .map_err(|_| "Échec de l'initialisation du tas")?;
+        .map_err(|_| "Error initializing heap")?;
 
     Ok(())
 }

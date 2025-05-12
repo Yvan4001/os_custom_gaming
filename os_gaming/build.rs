@@ -4,6 +4,17 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/bootloaderCustom.rs");
+    
+    // Enable bootloader-custom-config feature if specified
+    if std::env::var("CARGO_FEATURE_BOOTLOADER_CUSTOM_CONFIG").is_ok() {
+        println!("cargo:rustc-cfg=bootloader_custom_config");
+    }
+    
+    // Add bootloader configuration parameters
+    println!("cargo:rustc-env=BOOTLOADER_CONFIG_MEMORY_OFFSET=0xFFFF_8000_0000_0000");
+    println!("cargo:rustc-env=BOOTLOADER_CONFIG_EXCLUDE_RANGE=0x400000-0x401000");
+    println!("cargo:rustc-env=BOOTLOADER_CONFIG_EXCLUDE=0x400000:0x401000");
     
     // Only run this for no_std builds
     if env::var("TARGET").unwrap_or_default() == "x86_64-unknown-none" {
