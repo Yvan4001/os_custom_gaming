@@ -1,408 +1,190 @@
-//! Virtual memory management
-//! 
-//! Handles page tables, mappings, and address space management
+//! Virtual memory management abstractions
+//!
+//! Handles higher-level virtual address space management.
 
 use core::sync::atomic::{AtomicUsize, Ordering};
-use spin::Mutex;
-use lazy_static::lazy_static;
-use x86_64::{VirtAddr, PhysAddr};
-pub(crate) use x86_64::structures::paging::{
-    PageTable, PageTableFlags, PhysFrame, Size4KiB, Size2MiB, Size1GiB, 
-    Mapper, OffsetPageTable, Page, FrameAllocator, MappedPageTable,
-    page_table::FrameError
-};
 use alloc::vec::Vec;
-use super::physical::{self, PAGE_SIZE};
-use crate::kernel::memory::memory_manager::MemoryError;
-use crate::kernel::memory::memory_manager::{MemoryProtection, MemoryType, CacheType};
-use crate::kernel::memory::memory_manager::current_page_table;
-use crate::kernel::memory::allocator::KernelHeapAllocator;
+use lazy_static::lazy_static;
+use x86_64::{VirtAddr, PhysAddr}; // PhysAddr might not be needed if only dealing with VA
+use x86_64::structures::paging::{
+    Page, PageTableFlags, PhysFrame, Size4KiB,
+    // Mapper, OffsetPageTable, FrameAllocator // These should not be directly used here now
+};
+use x86_64::structures::paging::FrameAllocator;
+use crate::kernel::memory::{
+    physical::{self, PAGE_SIZE}, // Use physical::PAGE_SIZE
+    memory_manager::{self, MemoryError, MemoryProtection, MemoryProtectionFlags, MemoryType, CacheType},
+};
 
-const DEFAULT_HEAP_SIZE: usize = 1024 * 1024 * 4; // 4MB
-
-/// Virtual memory manager
+/// Manages the kernel's virtual address space.
+/// This is a simplified VMM focusing on allocating ranges.
+#[derive(Debug)] // Added Debug
 pub struct VirtualMemoryManager {
-    /// Next available virtual address for allocation
-    next_virtual_address: AtomicUsize,
-    /// Lower half limit (for user space)
-    lower_half_limit: VirtAddr,
-    /// Kernel space base address
-    kernel_base: VirtAddr,
+    next_kernel_va: AtomicUsize, // For allocating kernel virtual space
+    // TODO: Add tracking for user space, different regions, etc.
+    // For simplicity, starting with a linear allocator for a specific kernel region.
+    kernel_dynamic_va_start: VirtAddr,
+    kernel_dynamic_va_end: VirtAddr,
 }
 
 impl VirtualMemoryManager {
-    /// Create a new virtual memory manager
     pub const fn new() -> Self {
+        // Define a region for dynamic kernel allocations (e.g., for heap, DMA buffers mapped to kernel)
+        // These addresses must be chosen carefully to not overlap with kernel code/data, MMIO, etc.
         Self {
-            next_virtual_address: AtomicUsize::new(0x1000_0000), // Start at 16MB
-            lower_half_limit: VirtAddr::new(0x0000_7FFF_FFFF_FFFF), // 47-bit user space
-            kernel_base: VirtAddr::new(0xFFFF_8000_0000_0000), // Higher half
+            // Example: Start dynamic allocations at 0xFFFF_C000_0000_0000 (adjust as needed)
+            next_kernel_va: AtomicUsize::new(0xFFFF_C000_0000_0000),
+            kernel_dynamic_va_start: VirtAddr::new(0xFFFF_C000_0000_0000),
+            // Example: End at 0xFFFF_DFFF_FFFF_FFFF (256 TiB region for dynamic kernel VA)
+            kernel_dynamic_va_end: VirtAddr::new(0xFFFF_DFFF_FFFF_FFFF),
         }
     }
-    
-    /// Initialize the virtual memory manager
-    pub fn init(&self) -> Result<(), &'static str> {
-        #[cfg(not(feature = "std"))]
-        {
-            // Initialize the kernel page tables
-            // This is highly dependent on your bootloader and initial state
-        }
-        
+
+    /// Initializes the VMM. Called once.
+    pub fn init_manager(&self) -> Result<(), &'static str> {
+        // Any VMM-specific setup can go here.
+        // For this simple version, nothing much is needed beyond the lazy_static creation.
+        log::info!("Virtual Memory Manager initialized. Kernel dynamic VA: {:?} - {:?}",
+            self.kernel_dynamic_va_start, self.kernel_dynamic_va_end);
         Ok(())
     }
-    
-    /// Allocate virtual memory space
-    pub fn allocate_virtual_space(&self, size: usize, alignment: usize) -> Result<VirtAddr, MemoryError> {
-        // Round size up to page size
-        let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-        let size = pages * PAGE_SIZE;
-        
-        // Align the address
-        let mut addr = self.next_virtual_address.load(Ordering::SeqCst);
-        addr = (addr + alignment - 1) & !(alignment - 1);
-        
-        // Allocate the space
-        let new_addr = addr + size;
-        self.next_virtual_address.store(new_addr, Ordering::SeqCst);
-        
-        Ok(VirtAddr::new(addr as u64))
+
+    /// Allocates a contiguous block of virtual address space in the kernel's dynamic region.
+    /// Does NOT back it with physical memory.
+    pub fn allocate_kernel_virtual_range(&self, size: usize, alignment: usize) -> Result<VirtAddr, MemoryError> {
+        if size == 0 { return Err(MemoryError::InvalidRange); }
+        let align = if alignment == 0 { PAGE_SIZE } else { alignment }; // Default to page alignment
+        let alloc_size = (size + PAGE_SIZE - 1) & !(PAGE_SIZE - 1); // Round up to page size
+
+        // Simple linear allocation (bump pointer)
+        loop {
+            let current_base = self.next_kernel_va.load(Ordering::Relaxed);
+            let aligned_base = (current_base + align - 1) & !(align - 1);
+
+            if VirtAddr::new(aligned_base as u64) + alloc_size.try_into().unwrap() > self.kernel_dynamic_va_end {
+                log::error!("Kernel virtual address space exhausted in dynamic region.");
+                return Err(MemoryError::NoMemory); // Or OutOfVirtualAddressSpace
+            }
+
+            if self.next_kernel_va.compare_exchange(
+                current_base,
+                aligned_base + alloc_size,
+                Ordering::SeqCst,
+                Ordering::Relaxed,
+            ).is_ok() {
+                return Ok(VirtAddr::new(aligned_base as u64));
+            }
+            // CAS failed, another thread/core allocated, retry.
+            core::hint::spin_loop();
+        }
     }
-    
-    pub fn map_memory(&self,
-        virt_addr: VirtAddr,
-        phys_addr: PhysAddr,
+
+    /// Allocates a virtual address range and backs it with newly allocated physical frames.
+    pub fn allocate_and_map_memory(
+        &self,
         size: usize,
-        mapper: &mut OffsetPageTable,
-        protection: MemoryProtection,
-        mem_type: MemoryType) -> Result<(), MemoryError> {
-    
-        #[cfg(not(feature = "std"))]
-        {
-            // Round size up to page size
-            let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-            let size = pages * PAGE_SIZE;
-    
-            // Don't lock mapper here - we're using the one passed in
-            // let _mapper = crate::kernel::memory::allocator::MAPPER.lock();
-    
-            // Convert protection to PageTableFlags
-            let mut flags = PageTableFlags::PRESENT;
-            if protection.write { flags |= PageTableFlags::WRITABLE; }
-            if !protection.execute { flags |= PageTableFlags::NO_EXECUTE; }
-            if protection.user { flags |= PageTableFlags::USER_ACCESSIBLE; }
-    
-            // Set cache type
-            match protection.cache_type {
-                CacheType::Uncacheable => { flags |= PageTableFlags::NO_CACHE; }
-                CacheType::WriteThrough => { flags |= PageTableFlags::WRITE_THROUGH; }
-                _ => {} // Default caching
-            }
-    
-            // Log the mapping attempt for debugging
-            log::debug!("Mapping {:?} bytes from phys {:?} to virt {:?} with flags {:?}",
-                size, phys_addr, virt_addr, flags);
-    
-            // Map the pages
-            for i in 0..pages {
-                let page_virt = VirtAddr::new(virt_addr.as_u64() + (i * PAGE_SIZE) as u64);
-                let page_phys = PhysAddr::new(phys_addr.as_u64() + (i * PAGE_SIZE) as u64);
-                
-                // Skip low memory addresses (prevent conflicts with bootloader) 
-                if page_virt.as_u64() < 0x10000 {
-                    log::warn!("Skipping low memory mapping at {:?}", page_virt);
-                    continue;
-                }
-                
-                let page = Page::<Size4KiB>::containing_address(page_virt);
-                
-                // Check if page is already mapped
-                if let Ok(frame) = mapper.translate_page(page) {
-                    if frame.start_address() == page_phys {
-                        log::debug!("Page {:?} already mapped to correct frame", page);
-                        continue;
-                    } else {
-                        log::warn!("Page {:?} already mapped to {:?}, remapping to {:?}",
-                            page, frame.start_address(), page_phys);
-                        
-                        // Try to unmap first - but continue even if it fails
-                        unsafe {
-                            match mapper.unmap(page) {
-                                Ok((_frame, flush)) => flush.flush(),
-                                Err(err) => log::warn!("Failed to unmap page {:?}: {:?}", page, err),
-                            }
-                        }
-                    }
-                }
-    
-                let frame = PhysFrame::containing_address(page_phys);
-    
-                // Try mapping but handle errors better
-                unsafe {
-                    match mapper.map_to(page, frame, flags, &mut FrameAllocImpl) {
-                        Ok(flush) => flush.flush(),
-                        Err(err) => {
-                            log::error!("Failed to map page {:?} to frame {:?}: {:?}", 
-                                page, frame, err);
-                            return Err(MemoryError::AllocationFailed);
-                        }
-                    }
-                }
-            }
-    
-            Ok(())
+        protection: MemoryProtectionFlags,
+        _mem_type: MemoryType, // mem_type could influence flags or physical memory type
+    ) -> Result<VirtAddr, MemoryError> {
+        let virt_addr = self.allocate_kernel_virtual_range(size, PAGE_SIZE)?;
+        let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+        let mut page_flags = PageTableFlags::PRESENT;
+        if protection.write { page_flags |= PageTableFlags::WRITABLE; }
+        if !protection.execute { page_flags |= PageTableFlags::NO_EXECUTE; }
+        // Kernel memory is typically not USER_ACCESSIBLE unless specified
+        if protection.user { page_flags |= PageTableFlags::USER_ACCESSIBLE; }
+        match protection.cache {
+            CacheType::Uncacheable => page_flags |= PageTableFlags::NO_CACHE,
+            CacheType::WriteThrough => page_flags |= PageTableFlags::WRITE_THROUGH,
+            _ => {}
         }
-    }
-    
-    /// Unmap virtual memory
-    pub fn unmap_memory(&self, virt_addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
-        #[cfg(feature = "std")]
-        {
-            // In std mode, we just simulate unmapping
-            Ok(())
+
+        for i in 0..num_pages {
+            let pmm = physical::get_physical_memory_manager();
+            // allocate_frame() from the X64FrameAllocator trait
+            let frame = pmm.allocate_frame().ok_or(MemoryError::OutOfMemory)?;
+            let page = Page::containing_address(virt_addr + (i * PAGE_SIZE) as u64);
+
+            memory_manager::map_page_for_kernel(page, frame, page_flags)
+                .map_err(|e| {
+                    log::error!("Failed to map page {:?} for new allocation: {:?}", page, e);
+                    // TODO: Unmap already mapped pages in this allocation and free frames
+                    MemoryError::InvalidMapping
+                })?
+                .flush();
         }
-        
-        #[cfg(not(feature = "std"))]
-        {
-            // Round size up to page size
-            let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-            
-            // Unmap the pages
-            let page_table = current_page_table();
-            
-            for i in 0..pages {
-                let page_virt = VirtAddr::new(virt_addr.as_u64() + (i * PAGE_SIZE) as u64);
-                let page = Page::<Size4KiB>::containing_address(page_virt);
-                
-                unsafe {
-                    // Create an offset page table using the current page table
-                    let mut mapper = OffsetPageTable::new(
-                        page_table,
-                        VirtAddr::new(0xFFFF800000000000) // Kernel direct mapping offset
-                    );
-                    
-                    // Unmap the page
-                    if let Ok((_frame, flush)) = mapper.unmap(page) {
-                        flush.flush();
-                    }
-                }
-            }
-            
-            Ok(())
-        }
-    }
-    
-    /// Check if a virtual address is mapped
-    pub fn is_mapped(&self, virt_addr: VirtAddr) -> bool {
-        #[cfg(feature = "std")]
-        {
-            // In std mode, we just simulate
-            true
-        }
-        
-        #[cfg(not(feature = "std"))]
-        {
-            // Check if the address is mapped in the page tables
-            if let Some(_) = physical::virt_to_phys(virt_addr) {
-                true
-            } else {
-                false
-            }
-        }
-    }
-    
-    /// Change protection for a memory region
-    pub fn protect(&self, virt_addr: VirtAddr, size: usize, protection: MemoryProtection, mapper: &mut OffsetPageTable) -> Result<(), MemoryError> {
-        #[cfg(feature = "std")]
-        {
-            // In std mode, we just simulate
-            Ok(())
-        }
-        
-        #[cfg(not(feature = "std"))]
-        {
-            // Round size up to page size
-            let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-            
-            // Convert protection to PageTableFlags
-            let mut flags = PageTableFlags::PRESENT;
-            
-            if protection.write {
-                flags |= PageTableFlags::WRITABLE;
-            }
-            if !protection.execute {
-                flags |= PageTableFlags::NO_EXECUTE;
-            }
-            if protection.user {
-                flags |= PageTableFlags::USER_ACCESSIBLE;
-            }
-            
-            // Set cache type
-            match protection.cache_type {
-                CacheType::Uncacheable => {
-                    flags |= PageTableFlags::NO_CACHE;
-                }
-                CacheType::WriteThrough => {
-                    flags |= PageTableFlags::WRITE_THROUGH;
-                }
-                CacheType::WriteBack => {
-                    flags |= PageTableFlags::WRITABLE;
-                }
-                _ => {} // Default caching
-            }
-            
-            // Update the page table entries
-            let page_table = current_page_table();
-            
-            for i in 0..pages {
-                let page_virt = VirtAddr::new(virt_addr.as_u64() + (i * PAGE_SIZE) as u64);
-                
-                // Get the current mapping
-                if let Some(phys_addr) = physical::virt_to_phys(page_virt) {
-                    // Unmap and remap with new protection
-                    self.unmap_memory(page_virt, PAGE_SIZE)?;
-                    self.map_memory(page_virt, phys_addr, PAGE_SIZE, mapper, protection, MemoryType::Normal)?;
-                }
-            }
-            
-            Ok(())
-        }
-    }
-    
-    /// Allocate and map physical memory
-    pub fn allocate_memory(&self, size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<VirtAddr, MemoryError> {
-        // Allocate virtual space
-        let virt_addr = self.allocate_virtual_space(size, PAGE_SIZE)?;
-        
-        // Round size up to page size
-        let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-        let size = pages * PAGE_SIZE;
-        
-        #[cfg(not(feature = "std"))]
-        {
-            // Allocate physical memory
-            let phys_addr = physical::get_physical_memory_manager()
-                .allocate_frames(pages)
-                .ok_or(MemoryError::OutOfMemory)?;
-            
-            // Map the memory
-            self.map_memory(virt_addr, phys_addr, size, mapper, protection, mem_type)?;
-        }
-        
         Ok(virt_addr)
     }
-    
-    /// Free allocated memory
-    pub fn free_memory(&self, virt_addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
-        // Round size up to page size
-        let pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
-        let size = pages * PAGE_SIZE;
-        
-        #[cfg(not(feature = "std"))]
-        {
-            // Get the physical addresses before unmapping
-            let mut phys_addrs = Vec::with_capacity(pages);
-            
-            for i in 0..pages {
-                let page_virt = VirtAddr::new(virt_addr.as_u64() + (i * PAGE_SIZE) as u64);
-                
-                if let Some(phys_addr) = physical::virt_to_phys(page_virt) {
-                    phys_addrs.push(phys_addr);
-                }
-            }
-            
-            // Unmap the virtual memory
-            self.unmap_memory(virt_addr, size)?;
-            
-            // Free the physical memory
-            for phys_addr in phys_addrs {
-                physical::get_physical_memory_manager().free_frame(phys_addr);
-            }
-        }
-        
-        #[cfg(feature = "std")]
-        {
-            // In std mode, we just simulate
-        }
-        
+
+    /// Frees a previously allocated (and mapped) virtual memory region.
+    /// Unmaps the pages and frees the corresponding physical frames.
+    pub fn free_and_unmap_memory(&self, virt_addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
+        if size == 0 { return Ok(()); }
+        let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+
+        // To free physical frames, we need to know which frames were backing this VA range.
+        // This requires translating each virtual page to its physical frame *before* unmapping,
+        // or if the unmap operation returned the frame.
+        // memory_manager::unmap_region does not return frames.
+        // We need a way to query the mapping.
+        // For now, this is a simplified version that only unmaps.
+        // A full VMM would track mappings or use a translate function.
+
+        // Step 1: Translate and collect frames (conceptual, needs mapper access)
+        let mut frames_to_free: Vec<PhysFrame> = Vec::new();
+        // This part needs access to the global mapper, e.g., via a memory_manager function.
+        // For now, this is a placeholder for how it *should* work.
+        // let mm_guard = memory_manager::MEMORY_MANAGER.lock(); // If MM had a translate_page_global
+        // for i in 0..num_pages {
+        //     let page = Page::containing_address(virt_addr + (i * PAGE_SIZE) as u64);
+        //     if let Some(frame) = mm_guard.translate_page_global(page) { // translate_page_global would be a new fn
+        //         frames_to_free.push(frame);
+        //     }
+        // }
+        // drop(mm_guard);
+
+        // Step 2: Unmap the region
+        memory_manager::unmap_region(virt_addr, size)?;
+
+        // Step 3: Free the collected physical frames (if collected)
+        // let pmm = physical::get_physical_memory_manager();
+        // for frame in frames_to_free {
+        //     pmm.free_phys_addr(frame.start_address());
+        // }
+        log::warn!("free_and_unmap_memory in virtual.rs: Physical frame freeing is currently conceptual and not fully implemented due to needing pre-unmap translation.");
+
+
+        // TODO: Mark the virtual address range [virt_addr, virt_addr+size) as free in this VMM's tracking.
+        // (Not implemented in this simple linear allocator).
         Ok(())
-    }
-}
-
-/// A frame allocator implementation for the page table mapping
-#[cfg(not(feature = "std"))]
-struct FrameAllocImpl;
-
-#[cfg(not(feature = "std"))]
-unsafe impl FrameAllocator<Size4KiB> for FrameAllocImpl {
-    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        let pmm = physical::get_physical_memory_manager();
-        pmm.allocate_frame()
     }
 }
 
 lazy_static! {
     static ref VIRTUAL_MEMORY_MANAGER: VirtualMemoryManager = VirtualMemoryManager::new();
-    static ref KERNEL_HEAP: KernelHeapAllocator = KernelHeapAllocator::new();
 }
 
-/// Initialize virtual memory management
-pub fn init(size: usize) -> Result<(), &'static str> {
-    log::warn!("Using deprecated allocator::init. Consider using init_heap for the global allocator.");
-    let heap_size = if size == 0 { DEFAULT_HEAP_SIZE } else { size };
-    KERNEL_HEAP.init(heap_size)
+/// Public function to initialize the VMM. Called from `memory::init`.
+pub fn init_virtual_manager() -> Result<(), &'static str> {
+    VIRTUAL_MEMORY_MANAGER.init_manager()
 }
 
-/// Get a reference to the virtual memory manager
-pub fn get_virtual_memory_manager() -> &'static VirtualMemoryManager {
-    &VIRTUAL_MEMORY_MANAGER
+// --- Public API for this virtual memory module ---
+
+pub fn allocate_and_map(
+    size: usize,
+    protection: MemoryProtectionFlags,
+    mem_type: MemoryType,
+) -> Result<VirtAddr, MemoryError> {
+    VIRTUAL_MEMORY_MANAGER.allocate_and_map_memory(size, protection, mem_type)
 }
 
-/// Get the kernel heap allocator (Associated with KERNEL_HEAP struct - likely remove)
-pub fn get_kernel_heap() -> &'static KernelHeapAllocator {
-    log::warn!("Using deprecated allocator::get_kernel_heap.");
-   &KERNEL_HEAP
+pub fn free_and_unmap(addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
+    VIRTUAL_MEMORY_MANAGER.free_and_unmap_memory(addr, size)
 }
 
-/// Allocate virtual memory
-pub fn allocate(size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<VirtAddr, MemoryError> {
-    get_virtual_memory_manager().allocate_memory(size, protection, mem_type, mapper)
-}
-
-/// Free allocated memory
-pub fn free(addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
-    get_virtual_memory_manager().free_memory(addr, size)
-}
-
-/// Map physical memory to virtual memory
-pub fn map(virt_addr: VirtAddr, phys_addr: PhysAddr, size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<(), MemoryError> {
-    get_virtual_memory_manager().map_memory(virt_addr, phys_addr, size, mapper , protection, mem_type)
-}
-
-/// Unmap virtual memory
-pub fn unmap(virt_addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
-    get_virtual_memory_manager().unmap_memory(virt_addr, size)
-}
-
-pub fn map_physical_memory(virt_addr: VirtAddr, phys_addr: PhysAddr, size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<VirtAddr, MemoryError> {
-    get_virtual_memory_manager().map_memory(virt_addr, phys_addr, size, mapper, protection, mem_type)?;
-    Ok(virt_addr)
-}
-/*
-let virt_addr = r#virtual::map_physical_region(
-        PhysAddr::new(phys_addr as u64), // Convert usize phys_addr to PhysAddr
-        size,
-        protection,
-        MemoryType::DMA, // Mark memory as DMA type
-        &mut *mapper,    // Pass the page table mapper
-    )
- */
-pub fn map_physical_region(phys_addr: PhysAddr, size: usize, protection: MemoryProtection, mem_type: MemoryType, mapper: &mut OffsetPageTable) -> Result<VirtAddr, MemoryError> {
-    let virt_addr = get_virtual_memory_manager().allocate_memory(size, protection, mem_type, mapper)?;
-    get_virtual_memory_manager().map_memory(virt_addr, phys_addr, size, mapper, protection, mem_type)?;
-    Ok(virt_addr)
-}
-
-/// Change memory protection
-pub fn protect(virt_addr: VirtAddr, size: usize, protection: MemoryProtection, mapper: &mut OffsetPageTable) -> Result<(), MemoryError> {
-    get_virtual_memory_manager().protect(virt_addr, size, protection, mapper)
-}
+// REMOVED: map, unmap, map_physical_memory, map_physical_region, protect functions
+// that took an external `mapper`. These operations should be requested through
+// memory_manager.rs services or high-level VMM functions like allocate_and_map.
+// The VMM's role is more about VA space management.

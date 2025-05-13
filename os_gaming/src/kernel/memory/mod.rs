@@ -1,136 +1,117 @@
-//! Memory Management Subsystem
-//! 
-//! This module provides memory management functionality for the OS kernel,
-//! including physical and virtual memory management, memory allocation,
-//! and DMA (Direct Memory Access) support for hardware operations.
+//! Kernel Memory Management Subsystem
+//!
+//! This module orchestrates the initialization and provides high-level access
+//! to memory-related functionalities.
 
-mod dma;
-mod memory_manager;
+pub mod allocator;
+pub mod dma;
+pub mod memory_manager;
 pub mod physical;
 pub mod r#virtual;
-pub mod allocator;
 
-use spin::Mutex;
-use lazy_static::lazy_static;
-use x86_64::structures::paging::{FrameAllocator, Mapper, PageSize, PageTableFlags};
-use x86_64::structures::paging::Translate;
-pub(crate) use memory_manager::{MemoryError, MemoryManager, PhysicalMemoryManager};
+// Re-export important types for convenience
+pub use memory_manager::{
+    MemoryError, MemoryInitError, MemoryProtection, CacheType, MemoryType, MemoryInfo, MemoryProtectionFlags,
+    map_page_for_kernel, // For direct use by allocator or other low-level kernel parts
+    // Public mapping functions are also available directly from memory_manager:
+    // memory_manager::map_physical_memory, memory_manager::unmap_region
+};
+pub use physical::PAGE_SIZE;
+
 use bootloader::BootInfo;
-use x86_64::PhysAddr;
 use core::sync::atomic::{AtomicBool, Ordering};
-use crate::kernel::memory::dma::DmaManager;
-use crate::kernel::memory::r#virtual::VirtualMemoryManager;
+use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::PageTableFlags;
+use core::ptr::NonNull;
 
-// Create thread-safe static reference to the memory manager
-lazy_static! {
-    static ref MEMORY_MANAGER: Mutex<MemoryManager> = Mutex::new(MemoryManager::new());
-    static ref DMA_MANAGER: Mutex<DmaManager> = Mutex::new(DmaManager::new());
-}
+/// Flag to ensure memory initialization happens only once.
+static MEMORY_SYSTEM_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
-/// Initialize memory management subsystem
-pub fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
-    // Use a lock to prevent multiple initializations
-    static INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-    // If already initialized, return immediately
-    if INITIALIZED.load(Ordering::SeqCst) {
+/// Initializes the entire memory subsystem.
+pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
+    if MEMORY_SYSTEM_INITIALIZED.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed).is_err() {
+        log::warn!("Memory subsystem already initialized.");
         return Ok(());
     }
 
-    // Get the physical memory offset
-    let phys_mem_offset = boot_info.physical_memory_offset;
+    log::info!("Initializing Kernel Memory Subsystem...");
 
-    // Configure the offset information in the allocator
-    crate::kernel::memory::allocator::set_memory_offset_info(phys_mem_offset);
-
-    // Initialize the memory manager
-    let result = MemoryManager::init(boot_info);
-
-    // Mark as initialized only on success
-    if result.is_ok() {
-        INITIALIZED.store(true, Ordering::SeqCst);
+    // 1. Initialize Core Memory Manager (PMM through physical::init_frame_allocator, Mapper)
+    if let Err(e) = memory_manager::MemoryManager::init_core(boot_info) {
+        let err_msg: &'static str = e.into();
+        log::error!("Core memory manager initialization failed: {}", err_msg);
+        MEMORY_SYSTEM_INITIALIZED.store(false, Ordering::SeqCst);
+        return Err(err_msg);
     }
+    log::info!("Core memory manager (PMM & Mapper) initialized.");
 
-    // Initialize IOMMU if available
-    if result.is_ok() {
-        if let Err(e) = DMA_MANAGER.lock().initialize_iommu() {
-            log::warn!("IOMMU not available or initialization failed: {}", e);
-            // Don't fail the entire initialization if IOMMU fails
-        }
+    // 2. Initialize Virtual Memory Abstractions
+    if let Err(e) = r#virtual::init_virtual_manager() { // Calls the VMM's own init
+        log::error!("Virtual memory manager initialization failed: {}", e);
+        MEMORY_SYSTEM_INITIALIZED.store(false, Ordering::SeqCst);
+        return Err(e);
     }
+    log::info!("Virtual memory manager abstractions initialized.");
 
-    result
+    // 3. Initialize Higher-Level Memory Services (Kernel Heap, DMA)
+    if let Err(e) = memory_manager::MemoryManager::init_services() { // This calls allocator::init_heap and dma::init
+        let err_msg: &'static str = e.into();
+        log::error!("Memory services (Heap/DMA) initialization failed: {}", err_msg);
+        MEMORY_SYSTEM_INITIALIZED.store(false, Ordering::SeqCst);
+        return Err(err_msg);
+    }
+    log::info!("Memory services (Heap & DMA) initialized.");
+
+    let mem_info = memory_manager::memory_info();
+    log::info!(
+        "Memory Stats Post-Init: Total RAM: {} MiB, Free RAM: {} MiB, Used RAM: {} MiB",
+        mem_info.total_ram / (1024 * 1024),
+        mem_info.free_ram / (1024 * 1024),
+        mem_info.used_ram / (1024 * 1024)
+    );
+
+    log::info!("Kernel Memory Subsystem successfully initialized.");
+    Ok(())
 }
 
+// --- High-Level Public API Wrappers (Examples) ---
 
-pub fn deallocate_virtual(ptr: *mut u8) {
-    let mut manager = MEMORY_MANAGER.lock();
-    manager.deallocate(ptr, 0);
+pub fn alloc_virtual_backed_memory(
+    size: usize,
+    protection: MemoryProtectionFlags,
+    mem_type: MemoryType,
+) -> Result<NonNull<u8>, MemoryError> {
+    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
+    if size == 0 { return Err(MemoryError::InvalidRange); }
+    r#virtual::allocate_and_map(size, protection, mem_type) // From virtual.rs
+        .map(|vaddr| NonNull::new(vaddr.as_mut_ptr()).ok_or(MemoryError::AllocationFailed))?
 }
 
-pub fn allocate_virtual(size: usize) -> Result<*mut u8, MemoryError> {
-    let mut manager = MEMORY_MANAGER.lock();
-    manager.allocate(size, 0).map(|non_null| non_null.as_ptr())
+pub fn free_virtual_backed_memory(ptr: NonNull<u8>, size: usize) -> Result<(), MemoryError> {
+    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
+    if size == 0 { return Ok(()); }
+    r#virtual::free_and_unmap(VirtAddr::from_ptr(ptr.as_ptr()), size) // From virtual.rs
 }
 
-
-/// Free previously allocated virtual memory
-pub fn free_virtual(ptr: *mut u8) {
-    let mut manager = MEMORY_MANAGER.lock();
-    manager.free(ptr, 0);
-}
-
-/// Map physical memory to virtual address space
-pub fn map_physical(
-    phys_addr: x86_64::PhysAddr,
+pub fn map_phys_mem_to_kernel_virt(
+    phys_addr: PhysAddr,
     size: usize,
     flags: PageTableFlags,
-    // Ajouter la contrainte + Translate ici
-    mapper: &mut (impl Mapper<x86_64::structures::paging::Size4KiB> + Translate),
-    allocator: &mut impl FrameAllocator<x86_64::structures::paging::Size4KiB>
-) -> Result<*mut u8, MemoryError> {
-    let mut manager = MEMORY_MANAGER.lock();
-    // L'appel ici est maintenant correct car `mapper` a la contrainte Translate
-    manager.map_physical(phys_addr, size, flags, mapper, allocator)
-        .map(|virt_addr| virt_addr.as_mut_ptr())
+) -> Result<VirtAddr, MemoryError> {
+    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
+    if size == 0 { return Err(MemoryError::InvalidRange); }
+    memory_manager::map_physical_memory(phys_addr, size, flags) // From memory_manager.rs
 }
 
-/// Get current memory usage statistics
-pub fn get_memory_stats() -> MemoryStats {
-    MEMORY_MANAGER.lock().get_stats()
+pub fn unmap_kernel_virt_region(virt_addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
+    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
+    if size == 0 { return Ok(()); }
+    memory_manager::unmap_region(virt_addr, size) // From memory_manager.rs
 }
 
-/// Memory usage statistics
-#[derive(Debug, Clone, Copy)]
-pub struct MemoryStats {
-    pub total_ram: usize,        // Total physical RAM in bytes
-    pub available_ram: usize,    // Available physical RAM in bytes
-    pub used_ram: usize,         // Used physical RAM in bytes
-    pub total_swap: usize,       // Total swap space in bytes
-    pub available_swap: usize,   // Available swap space in bytes
-    pub kernel_heap_used: usize, // Kernel heap usage in bytes
-}
-
-pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
-    // Vérifier si déjà initialisé
-    static INITIALIZED: AtomicBool = AtomicBool::new(false);
-
-    if INITIALIZED.swap(true, Ordering::SeqCst) {
-        // Déjà initialisé, retourner sans erreur
-        return Ok(());
+pub fn get_memory_statistics() -> MemoryInfo {
+    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) {
+        return MemoryInfo { total_ram:0, free_ram:0, used_ram:0, reserved_ram:0, kernel_size:0, page_size: PAGE_SIZE};
     }
-
-    // Initialiser l'allocateur de tas du noyau
-    allocator::set_memory_offset_info(boot_info.physical_memory_offset);
-
-    // Initialiser la mémoire physique
-    physical::init(boot_info)?;
-
-    // Initialiser le gestionnaire de mémoire virtuelle avec vérification des mappages existants
-    r#virtual::init(32)?;
-
-    // Initialiser le support DMA
-    dma::init()?;
-
-    Ok(())
+    memory_manager::memory_info() // From memory_manager.rs
 }
