@@ -4,31 +4,38 @@ A custom operating system kernel optimized for gaming, written in Rust.
 
 ## Overview
 
-OS Custom Gaming is a from-scratch operating system kernel designed specifically for gaming environments. Built with Rust's safety guarantees and zero-cost abstractions, this project aims to create a minimal, high-performance OS that dedicates maximum resources to gaming applications while providing necessary system services.
+FluxGridOS is a from-scratch operating system kernel designed specifically for gaming environments. Built with Rust's safety guarantees and zero-cost abstractions, this project aims to create a minimal, high-performance OS that dedicates maximum resources to gaming applications while providing necessary system services.
 
 ## Features
 
-- **Bare-metal Rust kernel**: No underlying OS, direct hardware control
-- **Memory optimized**: Custom memory management tuned for gaming workloads
-- **GPU-focused drivers**: Direct hardware access to graphics cards (NVIDIA support)
-- **Low-latency audio**: Custom sound subsystem for minimal audio latency
-- **Configurable**: Binary configuration system for persistent settings
-- **Gaming profiles**: Support for different optimization profiles
+- **Bare-metal Rust kernel**: No underlying OS, direct hardware control.
+- **Memory Optimized**: Custom memory management (`kernel/memory/`) tuned for gaming workloads.
+- **CPU & Interrupt Management**: Dedicated modules for CPU features (`kernel/cpu/`) and interrupt handling (`kernel/interrupts/`).
+- **Modular Drivers (`kernel/drivers/`)**: Including GPU-focused drivers (NVIDIA support), input, sound, and storage.
+- **Low-latency Audio**: Custom sound subsystem for minimal audio latency.
+- **Configuration System (`config/`)**: Binary configuration for persistent settings and gaming profiles.
+- **GUI Layer (`gui/`)**: With custom widgets (`gui/widgets/`) and asset management (`gui/assets/`).
+- **Gaming Profiles**: Support for different optimization profiles.
 
-## Architecture
+## Conceptual Architecture
 ```bash
 ┌────────────────────────────────────────────────┐
 │                  Applications                   │
 └───────────────────────┬────────────────────────┘
 │
 ┌───────────────────────┴────────────────────────┐
-│                      GUI                        │
+│               GUI Layer (gui/)               │
+│     (Windowing, Renderer, Widgets, Assets)     │
 └───────────────────────┬────────────────────────┘
 │
 ┌───────────────────────┴────────────────────────┐
-│                  FluxGrid Kernel               │
+│            FluxGrid Kernel (kernel/)         │
 ├────────────────┬──────────────┬────────────────┤
 │ Memory Manager │  Scheduler   │ Device Drivers  │
+│ (kernel/memory)|(Core Kernel) │ (kernel/drivers)|
+├────────────────┼──────────────┼────────────────┤
+│ CPU Management │ Interrupts   │ Core Services  │
+│ (kernel/cpu) │ (kernel/interrupts)|              │
 ├────────────────┴──────────────┴────────────────┤
 │              Hardware Abstraction Layer         │
 └────────────────────────┬─────────────────────┬─┘
@@ -37,173 +44,130 @@ OS Custom Gaming is a from-scratch operating system kernel designed specifically
 │     System Hardware      │   │       BIOS       │
 └──────────────────────────┘   └─────────────────┘
 ```
+## Detailed Architecture
 
-## High-Level Architecture
+FluxGridOS follows a modular design with several key components organized as follows:
 
-### Kernel Structure
+### 1. Kernel (`kernel/`)
 
-The OS Custom Gaming kernel follows a modular design with several key components:
+The core of the operating system, responsible for all low-level operations and resource management.
 
-- **Boot Process**
-  - Uses a custom bootloader to initialize hardware
-  - Sets up initial paging and memory structures
-  - Transfers control to the Rust kernel entry point (`_start`)
+-   **Boot Process:**
+    -   Initializes hardware via a custom bootloader or standard boot protocol (e.g., Limine, Multiboot).
+    -   Sets up initial paging, GDT, IDT, and other crucial CPU structures.
+    -   Transfers control to the Rust kernel entry point (`_start`).
+-   **CPU Management (`kernel/cpu/`):**
+    -   Manages CPU-specific features, modes, and states.
+    -   Global Descriptor Table (GDT) setup.
+    -   Task State Segment (TSS) setup.
+    -   May include CPU-specific power management or feature detection.
+-   **Interrupt Handling (`kernel/interrupts/`):**
+    -   Interrupt Descriptor Table (IDT) setup.
+    -   Interrupt Service Routines (ISRs) for hardware and software interrupts.
+    * Programmable Interrupt Controller (PIC/APIC) management.
+-   **Memory Subsystem (`kernel/memory/`):**
+    -   **Physical Memory Manager (`physical.rs`):** Tracks available physical memory, handles frame allocation/deallocation, and manages the memory map.
+    -   **Virtual Memory Manager (`virtual.rs`):** Manages page tables, virtual address space allocation, memory protection, and permissions.
+    -   **Heap Allocator (`allocator.rs`):** Implements the global allocator trait for dynamic memory allocation within the kernel.
+    -   **DMA Manager (`dma.rs`):** Handles Direct Memory Access for devices, managing DMA-safe memory regions and ensuring coherence.
+-   **Device Drivers (`kernel/drivers/`):**
+    -   Manages interaction with hardware components. This is a modular system allowing for different drivers to be loaded or compiled in.
+    -   **GPU Drivers:** Specialized support, initially targeting NVIDIA. Includes VRAM management, command submission, and 2D/3D acceleration interfaces.
+    -   **Display Drivers:** Handles video output modes (e.g., VGA text mode for early debug, GOP/DRM for graphical modes, HDMI).
+    -   **Input Drivers:** Keyboard, mouse, and potentially gamepad controllers.
+    -   **Sound Drivers:** Interacts with sound hardware for audio playback and recording.
+    -   **Storage Drivers:** Controllers for storage devices (e.g., AHCI for SATA drives, NVMe).
+    -   **Platform Drivers:** ACPI for power management and system configuration, PCI/PCIe bus enumeration.
+-   **Scheduler:**
+    -   Manages task/thread scheduling. (Details to be expanded, e.g., pre-emptive, priority-based, game-optimized).
+-   **Core Kernel Services:**
+    -   May include system call interfaces (if user-mode is planned).
+    -   Synchronization primitives.
+    -   Kernel-internal logging and debugging facilities.
 
-- **Core Kernel**
-  - Interrupt handling (IDT setup, ISRs)
-  - CPU management (GDT setup, TSS)
-  - Core kernel services
+### 2. Configuration System (`config/`)
 
-- **Memory Subsystem**
-  - Physical memory management (`physical.rs`)
-  - Virtual memory management (`virtual.rs`)
-  - Heap allocation (`allocator.rs`)
-  - Memory-mapped I/O support
+Manages persistent system settings and user preferences.
 
-- **Device Drivers**
-  - GPU drivers (specialized NVIDIA support)
-  - Input devices (keyboard, mouse)
-  - Sound hardware
-  - Storage controllers
-  - VGA text mode for debugging
-  - HDMI output
+-   Uses `bincode` for serialization/deserialization of `SystemConfig` structures.
+-   Loads configuration at boot and saves changes as needed.
+-   Provides default settings if a configuration file is missing or corrupt.
+-   Supports "Gaming Profiles" which can apply sets of pre-defined optimizations (e.g., CPU affinity, power settings, driver parameters).
 
-- **System Services**
-  - Configuration management (`config/mod.rs`)
-  - Power management
-  - Virtual filesystem abstraction
+### 3. GUI Layer (`gui/`)
 
-- **GUI Layer**
-  - Window management
-  - Graphics rendering
-  - Font handling
-  - Theme support
+Provides the graphical user interface and rendering capabilities.
 
-### Memory Management
+-   **Window Management:** Handles window creation, placement, and events.
+-   **Renderer (`gui/renderer.rs`):** Abstracts graphics drawing operations, potentially using GPU acceleration via `kernel/drivers/gpu`.
+-   **Widgets (`gui/widgets/`):** A library of UI elements (buttons, sliders, text boxes, etc.).
+-   **Assets (`gui/assets/`):** Management for fonts, themes, icons, and other UI resources.
 
-The memory management subsystem is composed of several specialized components:
+### 4. Applications
 
-- **Physical Memory Manager**
-  - Tracks available physical memory
-  - Handles frame allocation and deallocation
-  - Maintains memory maps
-
-- **Virtual Memory Manager**
-  - Creates and manages page tables
-  - Provides virtual address space allocation
-  - Handles memory protection and permissions
-
-- **Heap Allocator**
-  - Implements the global allocator trait
-  - Uses a linked list allocator for dynamic memory
-  - Provides memory allocation services to the kernel
-
-- **DMA Manager**
-  - Handles direct memory access for devices
-  - Ensures memory coherence
-
-### Driver Subsystem
-
-The driver architecture follows a layered approach:
-
-```bash
-┌─────────────────────────────────────────┐
-│            Driver Interface              │
-└───────────────┬─────────────────────────┘
-│
-┌───────────────┼─────────────────────────┐
-│  ┌─────────┐  │  ┌─────────┐  ┌────────┐ │
-│  │   GPU   │  │  │  Sound  │  │  Input │ │
-│  └─────────┘  │  └─────────┘  └────────┘ │
-│               │                          │
-│  ┌─────────┐  │  ┌─────────┐  ┌────────┐ │
-│  │  Video  │  │  │ Storage │  │  ACPI  │ │
-│  └─────────┘  │  └─────────┘  └────────┘ │
-└───────────────┴─────────────────────────┘
-```
-
-- **GPU Drivers**
-  - Hardware-specific implementations (NVIDIA)
-  - Memory management for VRAM
-  - Command submission and synchronization
-
-- **Sound System**
-  - Audio buffer management
-  - Waveform generation
-  - Multiple channel support
-
-- **Input Handling**
-  - Keyboard and mouse drivers
-  - Event processing
-  - Gamepad support
-
-### Configuration System
-
-The configuration system uses bincode serialization to store system settings persistently:
-
-- Serializes `SystemConfig` structures to binary format
-- Handles loading/saving of configuration data
-- Provides defaults when no configuration exists
-- Supports gaming profiles with different optimization settings
+User-level applications, primarily games, that run on top of the OS and sofware layer.
 
 ## Building
 
 ### Prerequisites
 
-- Rust toolchain (nightly)
-- QEMU (for testing)
-- x86_64 cross-compilation tools
-- Cargo and build tools
+-   Rust toolchain (nightly recommended for OS development features)
+-   QEMU (for emulation and testing)
+-   `cargo-binutils` for `objcopy` and related tools (or ensure `llvm-tools-preview` component is installed via `rustup component add llvm-tools-preview`)
+-   A suitable bootloader setup (e.g., Limine, or if `bootimage` is used, it handles this)
 
 ### Build Steps
 
-1. Clone the repository:
+1.  Clone the repository:
+    ```sh
+    git clone [https://github.com/Yvan4001/FluxGridOS.git](https://github.com/Yvan4001/FluxGridOS.git) # Updated name
+    cd FluxGridOS
+    ```
 
-   ```sh
-   git clone https://github.com/Yvan4001/os-custom-gaming.git
-   cd os-custom-gaming
-   ``` 
+2.  Build the kernel (ensure your `.cargo/config.toml` or target JSON specifies the correct linker and build options):
+    ```sh
+    cargo build --target x86_64-fluxGridOs.json # Or your custom target
+    ```
 
-2. Build the kernel:
+3.  Create a bootable disk image:
+    The `build_iso.sh` (for Linux/macOS) or `build_iso.bat` (for Windows) script handles packaging the compiled kernel with a bootloader to create a bootable ISO image.
+    ```sh
+    ./build_iso.sh
+    ```
+    or
+    ```sh
+    ./build_iso.bat
+    ```
 
-   ```sh
-   cargo build --target x86_64-fluxGridOs.json
-   ```
+## Current Status & Roadmap
 
-3. Create bootable disk image:
+FluxGridOS is in active development.
 
-   ```sh
-   ./build_iso.sh
-   ```
-   or
-   ```sh
-   ./build_iso.bat
-   ```
+### Working Components:
+* Boot sequence and initial hardware setup.
+* Core memory management (physical and virtual memory, heap).
+* VGA text mode output.
+* Basic keyboard input.
+* Initial structures for GPU drivers and configuration system.
 
-## Current Status
+### Planned / In Progress:
+* **Full GPU Acceleration:** Complete NVIDIA driver, 2D/3D rendering pipeline.
+* **Advanced Scheduler:** Game-optimized, low-latency scheduler.
+* **Sound System:** Robust, low-latency audio output and input.
+* **Storage Subsystem:** Filesystem support and block device drivers.
+* **Networking Stack:** For online gaming and system updates (if applicable).
+* **Comprehensive GUI:** Rich widget set, window manager, theming.
+* **Gaming Profiles:** Implementation of profile switching and settings.
 
-### OS Custom Gaming is in active development. Current working components:
-
-    Boot sequence
-    Memory management
-    VGA text output
-    Keyboard input
-    Basic GPU driver structure
-    Configuration system
-    Complete sound system
-    Full GPU acceleration
-    Game-optimized scheduler
-    Storage subsystem
-
-### Contributing
+## Contributing
 
 Contributions are welcome! Please check the issues list for tasks that need help, or suggest new features through the issue tracker.
 
-    Fork the repository
-    Create your feature branch (git checkout -b feature/amazing-feature)
-    Commit your changes (git commit -m 'Add some amazing feature')
-    Push to the branch (git push origin feature/amazing-feature)
-    Open a Pull Request
+1.  Fork the repository.
+2.  Create your feature branch (`git checkout -b feature/YourAmazingFeature` or `bugfix/issue-X-short_description`).
+3.  Commit your changes (`git commit -m 'Add some AmazingFeature'`).
+4.  Push to the branch (`git push origin feature/YourAmazingFeature`).
+5.  Open a Pull Request.
 
 ## License
 
