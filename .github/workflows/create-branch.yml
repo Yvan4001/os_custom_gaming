@@ -1,0 +1,37 @@
+name: Create Branch for Issue
+
+on:
+  issues:
+    types: [labeled]
+
+jobs:
+  create-branch:
+    if: contains(github.event.issue.labels.*.name, 'create-branch')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v2
+        with:
+          ref: dev  # Check out the dev branch instead of the default branch
+      
+      - name: Extract issue info
+        id: issue_info
+        run: |
+          # Extract all labels except priority labels
+          LABELS=$(echo '${{ toJSON(github.event.issue.labels) }}' | jq -r '[.[] | .name | select(. != "low" and . != "medium" and . != "high" and . != "create-branch")] | join("-")' | tr '[:upper:]' '[:lower:]')
+          
+          # Format issue title (lowercase with underscores)
+          TITLE=$(echo '${{ github.event.issue.title }}' | tr '[:upper:]' '[:lower:]' | sed 's/[^a-z0-9]/_/g' | sed 's/__*/_/g' | sed 's/^_//' | sed 's/_$//')
+          
+          # Limit length of title
+          TITLE=${TITLE:0:50}
+          
+          echo "::set-output name=labels::$LABELS"
+          echo "::set-output name=title::$TITLE"
+      
+      - name: Create branch
+        uses: peterjgrainger/action-create-branch@v2.2.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.PERSONAL_ACCESS_TOKEN }}
+        with:
+          branch: "${{ steps.issue_info.outputs.labels || 'feature' }}/issue-${{ github.event.issue.number }}-${{ steps.issue_info.outputs.title }}"
+          sha: ${{ github.sha }}  # Use the SHA of the dev branch

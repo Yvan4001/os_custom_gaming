@@ -1,4 +1,4 @@
-// filepath: /media/yvan/Linux_plus/projet_dev/os_custom_gaming/os_gaming/src/kernel/drivers/gpu/specific/nvidia/common.rs
+// filepath: /media/yvan/Linux_plus/projet_dev/os_custom_gaming/fluxGridOs/src/kernel/drivers/gpu/specific/nvidia/common.rs
 //! Common utilities and structures for NVIDIA GPU drivers
 extern crate alloc;
 use alloc::string::String;

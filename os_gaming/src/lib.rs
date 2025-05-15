@@ -42,7 +42,7 @@ pub mod bootloaderCustom;
 
 // System constants
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
-pub const NAME: &str = "OS Gaming System";
+pub const NAME: &str = "FluxGridOs Gaming System";
 
 // Configuration structure
 #[derive(Debug, Clone)]

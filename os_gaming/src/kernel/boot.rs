@@ -6,7 +6,7 @@ use spin::Mutex;
 extern crate alloc;
 use alloc::string::String;
 use bootloader::BootInfo;
-use crate::kernel::memory::MemoryManager;
+use crate::kernel::memory::memory_manager::MemoryManager;
 use crate::println;
 
 /// Boot status tracking
@@ -173,7 +173,6 @@ fn cpu_init() -> Result<(), &'static str> {
 fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
     // Setting physical memory offset first is correct
     let phys_mem_offset = boot_info.physical_memory_offset;
-    crate::kernel::memory::allocator::set_memory_offset_info(phys_mem_offset);
 
     // Add this code to reserve the problematic memory region
     // This explicitly marks the 0x400000 region as used before page mapping
@@ -187,7 +186,7 @@ fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
     }
 
     // Continue with normal memory initialization
-    MemoryManager::init(boot_info)?;
+    MemoryManager::init_core(boot_info)?;
     crate::kernel::memory::allocator::init_heap()
         .map_err(|_| "Error initializing heap")?;
 

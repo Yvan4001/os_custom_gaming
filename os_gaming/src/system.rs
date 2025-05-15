@@ -526,7 +526,7 @@ impl System {
 
             let fs_manager = FilesystemManager::new();
             // Write to file using the filesystem API
-            match fs_manager.open_file("/etc/os_gaming/system_state.bin", false) {
+            match fs_manager.open_file("/etc/fluxGridOs/system_state.bin", false) {
                 Ok(mut file) => {
                     if let Err(_) = file.write(&encoded, &fs_manager) {
                         log::error!("Failed to write system state file");

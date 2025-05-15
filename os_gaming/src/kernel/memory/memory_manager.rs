@@ -1,530 +1,42 @@
-//! Memory management subsystem
-//!
-//! This module handles physical and virtual memory management,
-//! including page allocation, memory mapping, and heap allocation.
-extern crate alloc;
-use core::sync::atomic::{AtomicBool, Ordering};
+//! Memory management subsystem core: Mapper and core services.
+
+use core::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use lazy_static::lazy_static;
 use spin::Mutex;
 use x86_64::registers::control::Cr3;
-
-use crate::kernel::memory::physical;
-#[cfg(not(feature = "std"))]
-pub(crate) use crate::kernel::memory::physical::PhysicalMemoryManager;
-use crate::kernel::memory::r#virtual;
-use crate::kernel::memory::r#virtual::free;
-use crate::kernel::memory::dma;
-use crate::kernel::memory::allocator;
-#[cfg(not(feature = "std"))]
-use x86_64::{
-    structures::paging::{
-        FrameAllocator, Mapper, Page, PageTable, PhysFrame, Size4KiB,
-        OffsetPageTable, PageTableFlags
-    },
-    VirtAddr, PhysAddr,
+use x86_64::{PhysAddr, VirtAddr};
+use x86_64::structures::paging::{
+    FrameAllocator as X64FrameAllocator, Mapper, Page, PageTable, PhysFrame, Size4KiB,
+    OffsetPageTable, PageTableFlags,
+    mapper::{MapperFlush, MapToError, UnmapError, TranslateResult, MappedFrame, Translate},
+    // MappedPageTable, page_table::PageTableEntry, Size2MiB, Size1GiB // Keep if using huge pages
 };
-use x86_64::structures::paging::mapper::{Translate, TranslateResult, MappedFrame};
-use x86_64::structures::paging::page_table::PageTableEntry;
-use x86_64::structures::paging::{Size2MiB, Size1GiB};
 use core::ptr::NonNull;
 use bootloader::BootInfo;
-use x86_64::structures::paging::mapper::MapToError;
-use alloc::string::String;
-use crate::kernel::memory::physical::PAGE_SIZE;
-use x86_64::structures::paging::mapper::MapperFlush;
+use alloc::string::String; // Only if MemoryInitError::PhysicalMemoryInitFailed uses it.
 
-/// Memory management error types
-#[derive(Debug)]
+use crate::kernel::memory::physical::{self, PAGE_SIZE}; // Use physical::PAGE_SIZE
+use crate::kernel::memory::{allocator, dma, r#virtual}; // For init_services
+
+// --- Error Types ---
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MemoryError {
-    AllocationFailed,
-    InvalidAddress,
-    PermissionDenied,
-    PageFault,
-    OutOfMemory,
-    InvalidMapping,
-    AlreadyMapped,
-    NotMapped,
-    InvalidRange,
-    NoMemory,
+    AllocationFailed, InvalidAddress, PermissionDenied, PageFault, OutOfMemory,
+    InvalidMapping, AlreadyMapped, NotMapped, InvalidRange, NoMemory, InvalidState, NotImplemented,
 }
 
 #[derive(Debug)]
 pub enum MemoryInitError {
     PageTableCreationFailed,
-    PhysicalMemoryInitFailed,
+    PhysicalMemoryInitFailed(String),
     VirtualMemoryInitFailed,
     HeapInitFailed,
     DmaInitFailed,
-    FrameAllocationFailed,
-    MappingError(MapToError<Size4KiB>)
+    FrameAllocationFailed, // From FrameAllocator trait if PMM fails
+    MappingError(MapToError<Size4KiB>),
+    KernelAddressMissing,
 }
 
-impl From<MapToError<Size4KiB>> for MemoryInitError {
-    fn from(error: MapToError<Size4KiB>) -> Self {
-        MemoryInitError::MappingError(error)
-    }
-}
-
-unsafe impl FrameAllocator<Size4KiB> for PhysicalMemoryManager {
-    fn allocate_frame(&mut self) -> Option<PhysFrame<Size4KiB>> {
-        let frame_addr = match self.allocate_frames(1) {
-            Some(addr) => addr,
-            None => {
-                log::error!("Failed to allocate frame");
-                return None;
-            }
-        };
-
-        // Créer et retourner un PhysFrame à partir de l'adresse
-        Some(PhysFrame::containing_address(frame_addr))
-    }
-}
-
-impl From<MemoryInitError> for &'static str {
-    fn from(error: MemoryInitError) -> &'static str {
-        match error {
-            MemoryInitError::PageTableCreationFailed => "Failed to create page tables",
-            MemoryInitError::PhysicalMemoryInitFailed => "Failed to initialize physical memory",
-            MemoryInitError::VirtualMemoryInitFailed => "Failed to initialize virtual memory",
-            MemoryInitError::HeapInitFailed => "Failed to initialize heap",
-            MemoryInitError::DmaInitFailed => "Failed to initialize DMA",
-            MemoryInitError::FrameAllocationFailed => "Failed to allocate frame",
-            MemoryInitError::MappingError(_) => "Failed to map page",
-        }
-    }
-}
-
-
-/// Memory protection flags
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct MemoryProtection {
-    pub read: bool,
-    pub write: bool,
-    pub execute: bool,
-    pub user: bool,
-    pub cache_type: CacheType
-}
-
-/// Cache types for memory regions
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CacheType {
-    Uncacheable,
-    WriteCombining,
-    WriteThrough,
-    WriteProtected,
-    WriteBack,
-}
-
-/// Memory types for different regions
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum MemoryType {
-    /// Regular RAM
-    Normal,
-    /// Memory-mapped device
-    Device,
-    /// DMA buffer memory
-    DMA,
-    /// Video/GPU memory
-    Video,
-    /// Code/executable memory
-    Code,
-}
-
-lazy_static! {
-    /// Track if the memory system has been initialized
-    static ref INITIALIZED: AtomicBool = AtomicBool::new(false);
-}
-pub struct MemoryManager {
-    mapper: Option<OffsetPageTable<'static>>,
-    frame_allocator: PhysicalMemoryManager,
-    initialized: AtomicBool,
-}
-
-pub fn create_page_mapping(
-    page: Page<Size4KiB>,
-    frame: PhysFrame<Size4KiB>,
-    flags: PageTableFlags,
-    mapper: &mut OffsetPageTable,
-    frame_allocator: &mut impl FrameAllocator<Size4KiB>,
-) -> Result<(), &'static str> {
-    // Check if the page is already mapped
-    if let Ok(mapped_frame) = mapper.translate_page(page) {
-        if mapped_frame == frame {
-            // If the page is already mapped to the same frame, return success
-            return Ok(());
-        } else {
-            // If the page is mapped to a different frame, return an error
-            return Err("Page already mapped to a different frame");
-        }
-    }
-
-    // Attempt to map the page to the frame
-    unsafe {
-        match mapper.map_to(page, frame, flags, frame_allocator) {
-            Ok(flush) => {
-                flush.flush(); // Ensure the mapping is flushed
-                Ok(())
-            }
-            Err(MapToError::PageAlreadyMapped(existing_frame)) => {
-                // Handle the case where the page is already mapped
-                if existing_frame == frame {
-                    // If it's mapped to the same frame, return success
-                    Ok(())
-                } else {
-                    // Otherwise, return an error
-                    Err("Page already mapped to a different frame")
-                }
-            }
-            Err(MapToError::FrameAllocationFailed) => Err("Failed to allocate frame"),
-            Err(MapToError::ParentEntryHugePage) => Err("Parent entry is a huge page"),
-            _ => Err("Invalid mapping"),
-        }
-    }
-}
-
-impl MemoryManager {
-    /// Create a new memory manager instance
-    pub fn new() -> Self {
-        MemoryManager {
-            mapper: None,
-            frame_allocator: PhysicalMemoryManager::new(),
-            initialized: AtomicBool::new(false),
-        }
-    }
-
-    /// Initialize the memory manager
-    pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
-        log::info!("Initialising the Memory Manager...");
-        if INITIALIZED.load(Ordering::SeqCst) {
-            return Ok(());
-        }
-
-        #[cfg(not(feature = "std"))]
-        {
-            // Get the physical memory offset
-            let phys_mem_offset = VirtAddr::new(boot_info.physical_memory_offset);
-
-            // Initialize physical memory management first
-            unsafe {
-                physical::init_frame_allocator(
-                    &boot_info.memory_map,
-                    PhysAddr::new(boot_info.physical_memory_offset),
-                    PhysAddr::new(0) // Use the actual kernel addresses when available
-                )?;
-            }
-
-            // Create page tables after physical memory initialization
-            let page_tables = unsafe { Self::create_page_tables(phys_mem_offset)? };
-            let mut instance = Self::new();
-            instance.mapper = Some(page_tables);
-
-            // Initialize virtual memory management with the page tables
-            r#virtual::init(4096)?;
-
-            // Configure the kernel heap once virtual memory is ready
-            allocator::init_heap()
-                .map_err(|_| "Failed to initialize kernel heap")?;
-            log::info!("Kernel heap initialized.");
-
-            // Initialize DMA memory management last
-            dma::init()?;
-        }
-
-        INITIALIZED.store(true, Ordering::SeqCst);
-
-        #[cfg(feature = "std")]
-        log::info!("Memory management initialized (simulated mode)");
-
-        #[cfg(not(feature = "std"))]
-        log::info!("Memory management initialized");
-
-        Ok(())
-    }
-
-    fn map_page(&mut self, page: Page, frame: PhysFrame, flags: PageTableFlags) -> Result<(), &'static str> {
-        // Check if the page is already mapped
-        if self.is_page_mapped(page) {
-            // If the page is already mapped to the same frame, it's OK
-            if self.get_frame_for_page(page) == Some(frame) {
-                return Ok(());
-            }
-            // Otherwise, it's an error
-            return Err("Page already mapped to a different frame");
-        }
-
-        // Map the page normally
-        unsafe {
-            self.mapper
-                .as_mut()
-                .expect("Map is not initialized")
-                .map_to(page, frame, flags, &mut self.frame_allocator)
-                .map_err(|_| "Échec de mappage de page")?
-                .flush();
-        }
-
-        Ok(())
-    }
-
-    fn is_page_mapped(&self, page: Page) -> bool {
-        unsafe {
-            self.mapper
-                .as_ref()
-                .expect("Map is not initialized")
-                .translate_page(page)
-                .is_ok() // Converts Result to bool (true if Ok, false if Err)
-        }
-    }
-
-    fn get_frame_for_page(&self, page: Page) -> Option<PhysFrame> {
-        unsafe {
-            self.mapper
-                .as_ref()
-                .expect("Map is not initialized")
-                .translate_page(page)
-                .ok() // Converts Result<PhysFrame, TranslateError> to Option<PhysFrame>
-        }
-    }
-
-    fn map_page_to_frame(&mut self, page: Page, frame: PhysFrame, flags: PageTableFlags) -> Result<(), &'static str> {
-        unsafe {
-            self.mapper
-                .as_mut()
-                .expect("Mapper not initialized")
-                .map_to(page, frame, flags, &mut self.frame_allocator)
-                .map_err(|_| "Failed to map the page")?
-                .flush();
-        }
-        Ok(())
-    }
-
-    unsafe fn active_level_4_table(phys_mem_offset: VirtAddr) -> &'static mut PageTable {
-        use x86_64::registers::control::Cr3;
-
-        let (level_4_table_frame, _) = Cr3::read();
-        let phys = level_4_table_frame.start_address();
-        let virt = phys_mem_offset + phys.as_u64();
-        let page_table_ptr: *mut PageTable = virt.as_mut_ptr();
-
-        &mut *page_table_ptr
-    }
-
-    unsafe fn create_page_tables(phys_mem_offset: VirtAddr) -> Result<OffsetPageTable<'static>, &'static str> {
-        let level_4_table = Self::active_level_4_table(phys_mem_offset);
-        Ok(OffsetPageTable::new(level_4_table, phys_mem_offset))
-    }
-
-    /// Allocate memory with the specified size and alignment
-    pub fn allocate(&mut self, size: usize, _align: usize) -> Result<NonNull<u8>, MemoryError> {
-        // REMOVE: libc::malloc call
-        log::error!("MemoryManager::allocate called directly. Use global allocator (Box, Vec).");
-        if size == 0 {
-            return Err(MemoryError::InvalidAddress);
-        }
-        // This function should likely be removed entirely.
-        Err(MemoryError::AllocationFailed)
-    }
-
-    pub fn deallocate(&mut self, ptr: *mut u8, size: usize) -> Result<(), MemoryError> {
-        if ptr.is_null() {
-            return Ok(());
-        }
-
-        let virt_addr = VirtAddr::from_ptr(ptr);
-        unsafe { free(virt_addr, size) }
-    }
-
-    /// Free previously allocated memory
-    pub fn free(&mut self, ptr: *mut u8, size: usize) -> Result<(), MemoryError> {
-        if ptr.is_null() {
-            return Ok(());
-        }
-
-        let addr = VirtAddr::new(ptr as u64);
-        free(addr, size)
-    }
-
-    /// Maps a physical address to a virtual address
-    pub fn map_physical(
-        &mut self,
-        physical_address: PhysAddr,
-        size: usize,
-        flags: PageTableFlags,
-        // Corriger la contrainte Translate (pas de générique)
-        mapper: &mut (impl Mapper<Size4KiB> + Translate),
-        frame_allocator: &mut impl FrameAllocator<Size4KiB>
-    ) -> Result<VirtAddr, MemoryError> {
-        if size == 0 {
-            return Err(MemoryError::InvalidRange);
-        }
-
-        let phys_addr_value = physical_address.as_u64();
-        let start_virt_addr = VirtAddr::new(0x_FFFF_C000_0000_0000 + phys_addr_value);
-
-        let page_range = {
-            let start_page = Page::<Size4KiB>::containing_address(start_virt_addr);
-            let end_virt_addr = start_virt_addr + u64::try_from(size).map_err(|_| MemoryError::InvalidRange)? - 1u64;
-            let end_page = Page::<Size4KiB>::containing_address(end_virt_addr);
-            Page::range_inclusive(start_page, end_page)
-        };
-
-        for page in page_range {
-            let frame_offset = page.start_address().as_u64() - start_virt_addr.as_u64();
-            let phys_addr = PhysAddr::new(phys_addr_value + frame_offset);
-            let frame = PhysFrame::<Size4KiB>::containing_address(phys_addr);
-
-            unsafe {
-                // Vérifier si la page est déjà mappée en utilisant translate
-                // Match directement sur TranslateResult (pas Ok/Err)
-                match mapper.translate(page.start_address()) {
-                    TranslateResult::Mapped { frame: mapped_frame, offset: _, flags: existing_flags } => {
-                        // Vérifier si c'est une trame de 4KiB
-                        match mapped_frame {
-                            // Utiliser la bonne variante MappedFrame::Size4KiB
-                            MappedFrame::Size4KiB(phys_frame) => {
-                                // Comparer la trame physique et les drapeaux
-                                if phys_frame == frame && existing_flags == flags {
-                                    log::trace!("Page {:?} already correctly mapped, skipping.", page);
-                                    continue; // Passer à la page suivante
-                                } else {
-                                    log::warn!(
-                                        "Page {:?} already mapped with different parameters (Frame: {:?}, Flags: {:?}). Expected (Frame: {:?}, Flags: {:?})",
-                                        page, phys_frame, existing_flags, frame, flags
-                                    );
-                                    return Err(MemoryError::AlreadyMapped);
-                                }
-                            }
-                            // Gérer les cas de pages énormes comme des erreurs ici
-                            MappedFrame::Size2MiB(_) | MappedFrame::Size1GiB(_) => {
-                                log::error!("Page {:?} is part of a huge page, cannot map individually.", page);
-                                return Err(MemoryError::InvalidMapping);
-                            }
-                        }
-                    }
-                    TranslateResult::NotMapped => {
-                        // La page n'est pas mappée, procéder au mappage (géré ci-dessous par map_to)
-                        log::trace!("Page {:?} not mapped, proceeding to map.", page);
-                    }
-                    TranslateResult::InvalidFrameAddress(addr) => {
-                        log::error!("Invalid frame address {:?} encountered during translation for page {:?}", addr, page);
-                        return Err(MemoryError::InvalidMapping);
-                    }
-                    // Pas de Err(TranslateError) ici, translate ne retourne pas Result
-                }
-
-                // Si la page n'était pas mappée (TranslateResult::NotMapped), on procède au mappage.
-                match mapper.map_to(page, frame, flags, frame_allocator) {
-                    Ok(flush) => {
-                        flush.flush();
-                        log::trace!("Mapped page {:?} to frame {:?}", page, frame);
-                    }
-                    Err(MapToError::FrameAllocationFailed) => {
-                        log::error!("Frame allocation failed for mapping page {:?}", page);
-                        return Err(MemoryError::OutOfMemory);
-                    }
-                    Err(MapToError::ParentEntryHugePage) => {
-                        log::error!("Cannot map page {:?} because a parent entry is a huge page.", page);
-                        return Err(MemoryError::InvalidMapping);
-                    }
-                    Err(MapToError::PageAlreadyMapped(_existing_frame)) => {
-                        // Revérifier car l'état a pu changer entre translate et map_to
-                        match mapper.translate(page.start_address()) {
-                            // Match directement sur TranslateResult
-                            TranslateResult::Mapped { frame: current_mapped_frame, offset: _, flags: current_flags } => {
-                                match current_mapped_frame {
-                                    // Utiliser la bonne variante MappedFrame::Size4KiB
-                                    MappedFrame::Size4KiB(current_phys_frame) => {
-                                        if current_phys_frame == frame && current_flags == flags {
-                                            log::trace!("Page {:?} was already mapped correctly (reported by map_to).", page);
-                                            continue; // Le mappage correct existe
-                                        } else {
-                                            log::error!("map_to reported PageAlreadyMapped for page {:?}, but re-translation shows different parameters (Frame: {:?}, Flags: {:?}). Expected (Frame: {:?}, Flags: {:?})", page, current_phys_frame, current_flags, frame, flags);
-                                            return Err(MemoryError::AlreadyMapped);
-                                        }
-                                    }
-                                    // Gérer les cas de pages énormes
-                                    MappedFrame::Size2MiB(_) | MappedFrame::Size1GiB(_) => {
-                                        log::error!("map_to reported PageAlreadyMapped for page {:?}, but re-translation shows it's a huge page.", page);
-                                        return Err(MemoryError::InvalidMapping); // Ou AlreadyMapped
-                                    }
-                                }
-                            }
-                            TranslateResult::NotMapped => {
-                                log::error!("Inconsistent state: map_to reported PageAlreadyMapped for page {:?}, but re-translation shows NotMapped.", page);
-                                return Err(MemoryError::InvalidMapping);
-                            }
-                            TranslateResult::InvalidFrameAddress(addr) => {
-                                log::error!("Inconsistent state: map_to reported PageAlreadyMapped for page {:?}, but re-translation shows InvalidFrameAddress {:?}.", page, addr);
-                                return Err(MemoryError::InvalidMapping);
-                            }
-                            // Pas de Err(TranslateError)
-                        }
-                    }
-                    // Gérer d'autres erreurs potentielles de map_to si nécessaire
-                    _ => {
-                        log::error!("An unexpected error occurred while mapping page {:?}", page);
-                        return Err(MemoryError::InvalidMapping);
-                    }
-                }
-            }
-        }
-
-        Ok(start_virt_addr)
-    }
-
-    /// Get current memory statistics
-    pub fn get_stats(&self) -> super::MemoryStats {
-        super::MemoryStats {
-            total_ram: 0,
-            available_ram: 0,
-            used_ram: 0,
-            total_swap: 0,
-            available_swap: 0,
-            kernel_heap_used: 0,
-        }
-    }
-}
-
-/// Get the current page table
-#[cfg(not(feature = "std"))]
-pub fn current_page_table() -> &'static mut PageTable {
-    let (frame, _) = Cr3::read();
-    let phys_addr = frame.start_address();
-    let virt_addr = physical::phys_to_virt(phys_addr);
-
-    unsafe { &mut *(virt_addr.as_mut_ptr() as *mut PageTable) }
-}
-
-/// Information about system memory
-pub fn memory_info() -> MemoryInfo {
-    #[cfg(feature = "std")]
-    {
-        // Simulated memory info in std mode
-        MemoryInfo {
-            total_ram: 1024 * 1024 * 1024, // 1GB
-            free_ram: 512 * 1024 * 1024,   // 512MB
-            used_ram: 512 * 1024 * 1024,   // 512MB
-            reserved_ram: 0,
-            kernel_size: 8 * 1024 * 1024, // 8MB
-            page_size: 4096,
-        }
-    }
-
-    #[cfg(not(feature = "std"))]
-    {
-        let pmm = physical::get_physical_memory_manager();
-
-        MemoryInfo {
-            total_ram: pmm.total_memory(),
-            free_ram: pmm.free_memory(),
-            used_ram: pmm.used_memory(),
-            reserved_ram: pmm.reserved_memory(),
-            kernel_size: pmm.kernel_size(),
-            page_size: 4096,
-        }
-    }
-}
-
-/// Information about system memory
 pub struct MemoryInfo {
     pub total_ram: usize,
     pub free_ram: usize,
@@ -534,15 +46,345 @@ pub struct MemoryInfo {
     pub page_size: usize,
 }
 
-impl MemoryInfo {
-    fn new() -> Self {
-        Self {
-            total_ram: 0,
-            free_ram: 0,
-            used_ram: 0,
-            reserved_ram: 0,
-            kernel_size: 0,
-            page_size: 4096,
+impl From<MapToError<Size4KiB>> for MemoryInitError {
+    fn from(error: MapToError<Size4KiB>) -> Self {
+        MemoryInitError::MappingError(error)
+    }
+}
+
+impl From<MemoryInitError> for &'static str {
+    fn from(error: MemoryInitError) -> &'static str {
+        match error {
+            MemoryInitError::PageTableCreationFailed => "MM: Page table creation failed",
+            MemoryInitError::PhysicalMemoryInitFailed(_) => "MM: Physical memory init failed",
+            MemoryInitError::VirtualMemoryInitFailed => "MM: Virtual memory init failed",
+            MemoryInitError::HeapInitFailed => "MM: Heap init failed",
+            MemoryInitError::DmaInitFailed => "MM: DMA init failed",
+            MemoryInitError::FrameAllocationFailed => "MM: Frame allocation failed during mapping",
+            MemoryInitError::MappingError(_) => "MM: Page mapping error",
+            MemoryInitError::KernelAddressMissing => "MM: Kernel physical addresses missing/invalid",
         }
     }
 }
+
+// --- Memory Flags ---
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryProtection {
+    NoAccess, ReadOnly, ReadWrite, Execute, ExecuteRead, ExecuteReadWrite,
+}
+
+pub struct MemoryProtectionFlags {
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
+    pub user: bool,
+    pub cache: CacheType,
+    pub memory_type: MemoryType,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CacheType { Uncacheable, WriteCombining, WriteThrough, WriteProtected, WriteBack }
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MemoryType { Normal, Device, DMA, Video, Code, Data, Stack, Heap }
+
+impl MemoryProtectionFlags {
+    pub fn new(read: bool, write: bool, execute: bool, user: bool, cache: CacheType, memory_type: MemoryType) -> Self {
+        MemoryProtectionFlags { read, write, execute, user, cache, memory_type }
+    }
+
+    pub fn to_page_table_flags(&self) -> PageTableFlags {
+        let mut flags = PageTableFlags::empty();
+        if self.read { flags |= PageTableFlags::PRESENT; }
+        if self.write { flags |= PageTableFlags::WRITABLE; }
+        if self.execute { flags |= PageTableFlags::NO_EXECUTE; }
+        if self.user { flags |= PageTableFlags::USER_ACCESSIBLE; }
+        if self.cache == CacheType::Uncacheable { flags |= PageTableFlags::NO_CACHE; }
+        flags
+    }
+
+    pub fn from_page_table_flags(flags: PageTableFlags) -> Self {
+        MemoryProtectionFlags {
+            read: flags.contains(PageTableFlags::PRESENT),
+            write: flags.contains(PageTableFlags::WRITABLE),
+            execute: !flags.contains(PageTableFlags::NO_EXECUTE),
+            user: flags.contains(PageTableFlags::USER_ACCESSIBLE),
+            cache: if flags.contains(PageTableFlags::NO_CACHE) { CacheType::Uncacheable } else { CacheType::WriteBack },
+            memory_type: MemoryType::Normal, // Default, can be set based on context
+        }
+    }
+
+    pub fn is_executable(&self) -> bool {
+        self.execute
+    }
+
+    pub fn is_readable(&self) -> bool {
+        self.read
+    }
+
+    pub fn is_writable(&self) -> bool {
+        self.write
+    }
+}
+
+impl Default for MemoryProtectionFlags {
+    fn default() -> Self {
+        MemoryProtectionFlags { read: false, write: false, execute: false, user: false, cache: CacheType::Uncacheable, memory_type: MemoryType::Normal }
+    }
+}
+
+
+// --- Global State ---
+lazy_static! {
+    // This is the single global instance of the MemoryManager, holding the mapper.
+    static ref MEMORY_MANAGER: Mutex<MemoryManager> = Mutex::new(MemoryManager::new_uninit());
+}
+
+/// Tracks if the core memory subsystem (PMM and Mapper) has been initialized.
+static CORE_MM_INITIALIZED: AtomicBool = AtomicBool::new(false);
+
+/// Stores the physical memory offset provided by the bootloader.
+/// Initialized by `MemoryManager::init_core`.
+static PHYSICAL_MEMORY_OFFSET: AtomicU64 = AtomicU64::new(0);
+
+/// External symbols for kernel physical bounds (must be defined in linker script).
+extern "C" {
+    static __kernel_physical_start: u8;
+    static __kernel_physical_end: u8;
+}
+
+pub struct MemoryManager {
+    mapper: Option<OffsetPageTable<'static>>,
+}
+
+impl MemoryManager {
+    /// Creates a new, uninitialized MemoryManager.
+    /// Should only be called by the `MEMORY_MANAGER` lazy_static.
+    fn new_uninit() -> Self {
+        MemoryManager { mapper: None }
+    }
+
+    /// Initializes the core memory system: PMM and the kernel's page table mapper.
+    /// Must be called only once.
+    pub fn init_core(boot_info: &'static BootInfo) -> Result<(), MemoryInitError> {
+        if CORE_MM_INITIALIZED.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed).is_err() {
+            log::warn!("MemoryManager::init_core called more than once.");
+            return Ok(());
+        }
+        log::info!("Initializing Core Memory Manager (PMM & Mapper)...");
+
+        // 1. Get kernel physical addresses from linker symbols
+        let kernel_start_phys = PhysAddr::new(unsafe { &__kernel_physical_start as *const _ as u64 });
+        let kernel_end_phys = PhysAddr::new(unsafe { &__kernel_physical_end as *const _ as u64 });
+
+        if kernel_start_phys.is_null() || kernel_end_phys.is_null() || kernel_start_phys >= kernel_end_phys {
+            CORE_MM_INITIALIZED.store(false, Ordering::SeqCst); // Rollback
+            return Err(MemoryInitError::KernelAddressMissing);
+        }
+        log::debug!("Kernel physical bounds: {:#x} - {:#x}", kernel_start_phys, kernel_end_phys);
+
+        // 2. Initialize the global Physical Memory Manager (Frame Allocator)
+        physical::init_frame_allocator(&boot_info.memory_map, kernel_start_phys, kernel_end_phys)
+            .map_err(|e_str| MemoryInitError::PhysicalMemoryInitFailed(String::from(e_str)))?;
+        log::info!("Physical Memory Manager (PMM) initialized.");
+
+        // 3. Store physical memory offset and create page tables (Mapper)
+        let phys_mem_offset_val = VirtAddr::new(boot_info.physical_memory_offset);
+        PHYSICAL_MEMORY_OFFSET.store(phys_mem_offset_val.as_u64(), Ordering::SeqCst);
+        log::debug!("Physical memory offset stored: {:#x}", phys_mem_offset_val.as_u64());
+
+        let mut mm_guard = MEMORY_MANAGER.lock(); // Lock the global MemoryManager instance
+        let page_tables = unsafe {
+            // Pass the now stored offset to create_page_tables
+            Self::create_page_tables(phys_mem_offset_val)
+        }
+            .map_err(|e_str| MemoryInitError::PageTableCreationFailed)?;
+        mm_guard.mapper = Some(page_tables);
+        drop(mm_guard); // Release lock
+
+        log::info!("Kernel Page Table Mapper initialized. Core MM setup complete.");
+        Ok(())
+    }
+
+    /// Initializes higher-level memory services that depend on the core MM.
+    pub fn init_services() -> Result<(), MemoryInitError> {
+        if !CORE_MM_INITIALIZED.load(Ordering::SeqCst) {
+            log::error!("Attempted to init services before core MM.");
+            return Err(MemoryInitError::PhysicalMemoryInitFailed("Core MM not ready".into()));
+        }
+        log::info!("Initializing Memory Services (Heap, DMA)...");
+
+        allocator::init_heap().map_err(|e_map| MemoryInitError::HeapInitFailed)?; // Assuming init_heap returns MapToError
+        log::info!("Kernel Heap initialized.");
+
+        dma::init().map_err(|e_str| MemoryInitError::DmaInitFailed)?; // Assuming dma::init returns &'static str
+        log::info!("DMA Subsystem initialized.");
+
+        log::info!("All memory services initialized.");
+        Ok(())
+    }
+
+    /// Gets a mutable reference to the internal `OffsetPageTable` mapper.
+    /// Panics if the mapper is not initialized (i.e., `init_core` hasn't run).
+    fn mapper_mut(&mut self) -> &mut OffsetPageTable<'static> {
+        self.mapper.as_mut().expect("MemoryManager: Mapper not initialized. Call init_core first.")
+    }
+
+    /// Internal function to map a single kernel page. Robust against re-mapping identical pages.
+    pub fn map_kernel_page_internal( // Renamed to avoid conflict with public map_page_for_kernel
+        &mut self,
+        page: Page<Size4KiB>,
+        frame: PhysFrame<Size4KiB>,
+        flags: PageTableFlags,
+    ) -> Result<MapperFlush<Size4KiB>, MapToError<Size4KiB>> {
+        // Use the global PMM via physical::get_physical_memory_manager()
+        // The FrameAllocator trait is implemented on PhysicalMemoryManager
+        let pmm = physical::get_physical_memory_manager();
+
+        match self.mapper_mut().translate(page.start_address()) {
+            TranslateResult::Mapped { frame: mapped_raw_frame, offset: _, flags: existing_flags } => {
+                if let MappedFrame::Size4KiB(mapped_frame) = mapped_raw_frame {
+                    if mapped_frame == frame && existing_flags == flags {
+                        return Ok(MapperFlush::new(page)); // Already identically mapped
+                    } else {
+                        return Err(MapToError::PageAlreadyMapped(mapped_frame)); // Mapped differently
+                    }
+                } else {
+                    return Err(MapToError::ParentEntryHugePage); // Mapped as huge page
+                }
+            }
+            TranslateResult::NotMapped => { /* Page is not mapped, proceed */ }
+            TranslateResult::InvalidFrameAddress(addr) => {
+                log::error!("map_kernel_page: Invalid frame address {:?} during translate for page {:?}", addr, page);
+                return Err(MapToError::ParentEntryHugePage); // Or a more specific error
+            }
+        }
+        // This is safe because we're mapping kernel pages, and PMM handles frame validity.
+        unsafe { self.mapper_mut().map_to(page, frame, flags, pmm) }
+    }
+
+    /// Maps a physical memory range to a dynamically chosen virtual address range (placeholder for VA mgmt).
+    pub fn map_physical_memory_internal( // Renamed to avoid conflict
+        &mut self,
+        physical_address: PhysAddr,
+        size: usize,
+        flags: PageTableFlags,
+    ) -> Result<VirtAddr, MemoryError> {
+        if size == 0 { return Err(MemoryError::InvalidRange); }
+        if !CORE_MM_INITIALIZED.load(Ordering::SeqCst) { return Err(MemoryError::InvalidState); }
+
+        // VERY BASIC VA allocation: This needs a proper Virtual Address Space manager.
+        // For now, using a fixed high-memory region for MMIO/physical mappings.
+        // This is NOT robust for general use.
+        const MMIO_BASE: u64 = 0xFFFF_E000_0000_0000; // Example fixed base
+        // A real VA manager would find a free slot.
+        // For simplicity, we'll map phys_addr to MMIO_BASE + phys_addr. This is common for device memory.
+        // Ensure no overlap if phys_addr is very large.
+        let start_virt_addr = VirtAddr::new(MMIO_BASE + (physical_address.as_u64() & 0x0000_FFFF_FFFF_FFFF)); // Mask to keep it in a reasonable range
+
+        let num_pages = (size + PAGE_SIZE - 1) / PAGE_SIZE;
+        for i in 0..num_pages {
+            let page_offset = i as u64 * PAGE_SIZE as u64;
+            let current_page_virt = Page::containing_address(start_virt_addr + page_offset);
+            let current_frame_phys = PhysFrame::containing_address(physical_address + page_offset);
+
+            match self.map_kernel_page_internal(current_page_virt, current_frame_phys, flags) {
+                Ok(flush) => flush.flush(),
+                Err(e) => {
+                    log::error!("map_physical_memory failed for VA {:?} to PA {:?}: {:?}", current_page_virt, current_frame_phys, e);
+                    // TODO: Attempt to unmap pages successfully mapped so far in this call.
+                    return Err(match e {
+                        MapToError::FrameAllocationFailed => MemoryError::OutOfMemory,
+                        _ => MemoryError::InvalidMapping,
+                    });
+                }
+            }
+        }
+        Ok(start_virt_addr)
+    }
+
+    /// Unmaps a virtual memory region. Does not free the underlying physical frames.
+    pub fn unmap_region_internal(&mut self, virtual_address: VirtAddr, size: usize) -> Result<(), MemoryError> { // Renamed
+        if size == 0 { return Ok(()); }
+        if !CORE_MM_INITIALIZED.load(Ordering::SeqCst) { return Err(MemoryError::InvalidState); }
+
+        let start_page = Page::<Size4KiB>::containing_address(virtual_address);
+        let end_page = Page::<Size4KiB>::containing_address(virtual_address + size as u64 - 1u64);
+        let page_range = Page::range_inclusive(start_page, end_page);
+
+        for page in page_range {
+            match self.mapper_mut().unmap(page) {
+                Ok((_frame, flush)) => flush.flush(), // Frame is returned but we don't free it here
+                Err(UnmapError::PageNotMapped) => log::trace!("unmap_region: Page {:?} was not mapped.", page),
+                Err(e) => {
+                    log::error!("unmap_region: Failed to unmap page {:?}: {:?}", page, e);
+                    return Err(MemoryError::InvalidMapping);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Helper to create the initial `OffsetPageTable`.
+    unsafe fn create_page_tables(phys_mem_offset: VirtAddr) -> Result<OffsetPageTable<'static>, &'static str> {
+        // `current_page_table` needs the offset directly, as PMM might not be fully usable yet for virt_to_phys.
+        let level_4_table_ptr = Self::get_active_level_4_table_mut_ptr(phys_mem_offset);
+        Ok(OffsetPageTable::new(&mut *level_4_table_ptr, phys_mem_offset))
+    }
+
+    /// Helper to get a mutable pointer to the active L4 page table.
+    unsafe fn get_active_level_4_table_mut_ptr(phys_mem_offset: VirtAddr) -> *mut PageTable {
+        let (level_4_frame, _) = Cr3::read();
+        let phys_addr = level_4_frame.start_address();
+        let virt_addr = phys_mem_offset + phys_addr.as_u64();
+        virt_addr.as_mut_ptr()
+    }
+    // REMOVE: allocate and deallocate methods. Heap allocator should be used.
+}
+
+// --- Public Interface Functions ---
+// These are the primary functions other modules should use for memory operations.
+
+pub fn map_page_for_kernel(
+    page: Page<Size4KiB>,
+    frame: PhysFrame<Size4KiB>,
+    flags: PageTableFlags,
+) -> Result<MapperFlush<Size4KiB>, MapToError<Size4KiB>> {
+    MEMORY_MANAGER.lock().map_kernel_page_internal(page, frame, flags)
+}
+
+pub fn map_physical_memory(
+    physical_address: PhysAddr,
+    size: usize,
+    flags: PageTableFlags,
+) -> Result<VirtAddr, MemoryError> {
+    MEMORY_MANAGER.lock().map_physical_memory_internal(physical_address, size, flags)
+}
+
+pub fn unmap_region(virtual_address: VirtAddr, size: usize) -> Result<(), MemoryError> {
+    MEMORY_MANAGER.lock().unmap_region_internal(virtual_address, size)
+}
+
+/// Provides access to the physical memory offset stored during core initialization.
+pub fn get_physical_memory_offset() -> VirtAddr {
+    VirtAddr::new(PHYSICAL_MEMORY_OFFSET.load(Ordering::Relaxed))
+}
+
+/// Retrieves current memory statistics.
+pub fn memory_info() -> MemoryInfo {
+    if !CORE_MM_INITIALIZED.load(Ordering::SeqCst) {
+        return MemoryInfo { total_ram:0, free_ram:0, used_ram:0, reserved_ram:0, kernel_size:0, page_size: PAGE_SIZE};
+    }
+    let pmm = physical::get_physical_memory_manager(); // Safe to call after PMM init
+    MemoryInfo {
+        total_ram: pmm.total_memory(),
+        free_ram: pmm.free_memory(),
+        used_ram: pmm.used_memory(),
+        reserved_ram: pmm.kernel_size(), // Assuming reserved is mainly kernel
+        kernel_size: pmm.kernel_size(),
+        page_size: PAGE_SIZE,
+    }
+}
+
+// REMOVED current_page_table from here. If needed, it should use get_physical_memory_offset().
+// However, direct access to L4 table should be minimized outside this module.

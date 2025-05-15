@@ -2320,7 +2320,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "os_gaming"
+name = "fluxGridOs"
 version = "0.1.0"
 dependencies = [
  "assert",
