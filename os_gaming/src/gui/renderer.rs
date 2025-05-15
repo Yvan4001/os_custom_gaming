@@ -117,7 +117,7 @@ impl Renderer {
             match gpu::get_framebuffer(width, height) {
                 Ok(gpu_fb_raw_ptr) => {
                     // MODIFIED: Check is_null on the raw pointer
-                    if !gpu_fb_raw_ptr.assert_eq!(0){
+                    if gpu_fb_raw_ptr != 0 {
                         framebuffer_ptr_opt = Some(gpu_fb_raw_ptr as *mut u32);
                         framebuffer_virt_addr_opt = Some(VirtAddr::new(gpu_fb_raw_ptr as u64));
                         framebuffer_size_val = (width * height * 4) as usize;
