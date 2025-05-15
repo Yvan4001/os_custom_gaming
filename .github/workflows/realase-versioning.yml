@@ -1,0 +1,83 @@
+name: Create Pre-release from Release Branch
+
+on:
+  push:
+    branches:
+      - 'release/**' # Trigger on pushes to branches like release/0.2.0
+
+jobs:
+  build_and_prerelease:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # Needed to create releases and upload artifacts
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0 # Fetch all history for changelog generation if needed
+
+      - name: Set up Rust (if applicable)
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Extract version from branch name
+        id: get_version
+        run: |
+          # Extracts "0.2.0" from "release/0.2.0"
+          VERSION=$(echo "${{ github.ref_name }}" | sed -n 's#^release/\(.*\)$#\1#p')
+          echo "VERSION_TAG=v${VERSION}" >> $GITHUB_OUTPUT
+          echo "RELEASE_NAME=Pre-release ${VERSION}" >> $GITHUB_OUTPUT
+          echo "VERSION_FOR_ARTIFACT=${VERSION}" >> $GITHUB_OUTPUT
+
+      - name: Build OS Artifacts
+        run: |
+          echo "Building OS for pre-release ${{ steps.get_version.outputs.VERSION_TAG }}..."
+          # Ensure your build script is executable
+          chmod +x ./build_iso.sh
+          # Run your build script
+          ./build_iso.sh
+          # After build_iso.sh, ensure FluxGrid.iso is in a known location
+          # For example, if build_iso.sh creates it in the root:
+          mkdir -p release_artifacts # Create directory if it doesn't exist
+          if [ -f "FluxGrid.iso" ]; then
+            mv FluxGrid.iso release_artifacts/FluxGrid-${{ steps.get_version.outputs.VERSION_FOR_ARTIFACT }}.iso
+            echo "FluxGrid.iso moved to release_artifacts"
+          else
+            echo "Error: FluxGrid.iso not found after build!"
+            exit 1
+          fi
+
+      - name: Generate Changelog (Placeholder)
+        id: changelog
+        run: |
+          echo "Generating changelog for ${{ steps.get_version.outputs.RELEASE_NAME }}..."
+          # This should ideally pull from CHANGELOG.md or commit history
+          # for changes since the last tag or from the start of this release branch.
+          BODY_TEXT="This is a pre-release for version ${{ steps.get_version.outputs.VERSION_FOR_ARTIFACT }}.\n\n"
+          BODY_TEXT+="**Branch:** ${{ github.ref_name }}\n"
+          BODY_TEXT+="**Commit:** ${{ github.sha }}\n\n"
+          BODY_TEXT+="**Changes (placeholder - update manually or automate):**\n"
+          BODY_TEXT+="- Feature A for testing\n"
+          BODY_TEXT+="- Bugfix B for testing\n\n"
+          BODY_TEXT+="Please test thoroughly and report any issues."
+          echo "changelog_text<<EOF" >> $GITHUB_OUTPUT
+          echo -e "${BODY_TEXT}" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Pre-release
+        uses: softprops/action-gh-release@v1
+        with:
+          # The tag created here will be based on the version extracted from the branch name.
+          # This is a lightweight tag created by the action.
+          # For the final release, you'd create an annotated tag on 'main'.
+          tag_name: ${{ steps.get_version.outputs.VERSION_TAG }}-rc-${{ github.run_number }} # e.g., v0.2.0-rc-12
+          name: ${{ steps.get_version.outputs.RELEASE_NAME }} (Build #${{ github.run_number }})
+          body: ${{ steps.changelog.outputs.changelog_text }}
+          draft: false # Publish immediately as a pre-release
+          prerelease: true # Mark this as a pre-release
+          files: |
+            release_artifacts/FluxGrid-${{ steps.get_version.outputs.VERSION_FOR_ARTIFACT }}.iso
+            # Add other artifacts if any
