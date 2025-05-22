@@ -8,7 +8,7 @@ use x86_64::structures::paging::{PageTableFlags, Size4KiB, PhysFrame, Page}; // 
 
 use crate::kernel::memory::{
     physical::{self, PAGE_SIZE}, // Use physical::PAGE_SIZE
-    memory_manager::{self, MemoryProtection, CacheType, MemoryType},
+    memory_manager::{self, CacheType, MemoryType},
     MemoryError,
 };
 

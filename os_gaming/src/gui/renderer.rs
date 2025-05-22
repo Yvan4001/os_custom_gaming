@@ -8,16 +8,16 @@ use alloc::{vec, vec::Vec, format, string::String}; // Added format and String
 use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use serde::{Serialize, Deserialize};
+use crate::kernel::memory;
 
 use crate::kernel::drivers::gpu;
-use crate::kernel::memory::{
-    self,
-    MemoryError as KernelMemoryError,
-    MemoryProtection, // Using the enum from kernel::memory
-    MemoryProtectionFlags, // Using the struct from kernel::memory
-    MemoryType,
-    CacheType,
-};
+use crate::kernel::memory::memory_manager::MemoryError as KernelMemoryError;
+use crate::kernel::memory::memory_manager::MemoryProtectionFlags;
+use crate::kernel::memory::memory_manager::CacheType;
+use crate::kernel::memory::memory_manager::MemoryType;
+use crate::kernel::memory::memory_manager::MemoryInfo;
+use crate::kernel::memory::memory_manager::MemoryInitError;
+
 
 use x86_64::VirtAddr;
 use micromath::F32Ext; // For f32.round() if used in blend_colors

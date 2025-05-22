@@ -3,6 +3,7 @@
   <component name="NewModuleRootManager">
     <content url="file://$MODULE_DIR$">
       <sourceFolder url="file://$MODULE_DIR$/fluxGridOs/src" isTestSource="false" />
+      <sourceFolder url="file://$MODULE_DIR$/os_gaming/src" isTestSource="false" />
       <excludeFolder url="file://$MODULE_DIR$/fluxGridOs/.cargo/vendor/cc-1.2.19/src/target" />
       <excludeFolder url="file://$MODULE_DIR$/fluxGridOs/.cargo/vendor/syn-2.0.100/tests/debug" />
       <excludeFolder url="file://$MODULE_DIR$/fluxGridOs/.cargo/vendor/winnow-0.7.6/src/combinator/debug" />

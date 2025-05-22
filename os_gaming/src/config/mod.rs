@@ -970,7 +970,7 @@ pub fn save_system_config(config: &SystemConfig) -> Result<(), ConfigError> {
 
 /// Global configuration
 lazy_static! {
-    static ref CONFIG: Mutex<SystemConfig> = Mutex::new(load_system_config().unwrap_or_else(|e| {
+    pub static ref CONFIG: Mutex<SystemConfig> = Mutex::new(load_system_config().unwrap_or_else(|e| {
         log::warn!("Failed to load config: {}, using defaults", e);
         SystemConfig::default()
     }));

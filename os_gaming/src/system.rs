@@ -17,7 +17,7 @@ use crate::kernel::drivers::filesystem::{FilesystemManager};
 use crate::kernel::{self, drivers, interrupts, memory};
 use bincode::{Decode, Encode};
 use alloc::boxed::Box;
-use bootloader::BootInfo;
+use crate::boot::info::CustomBootInfo as BootInfo;
 
 /// System state flags
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

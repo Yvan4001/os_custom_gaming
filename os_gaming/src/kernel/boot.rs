@@ -1,13 +1,14 @@
 use super::drivers::{self, hdmi::GamingRequirements};
 use crate::kernel::interrupts;
-use crate::Config;
+use crate::config;
 use lazy_static::lazy_static;
 use spin::Mutex;
 extern crate alloc;
 use alloc::string::String;
-use bootloader::BootInfo;
-use crate::kernel::memory::memory_manager::MemoryManager;
 use crate::println;
+use crate::boot::info::CustomBootInfo as BootInfo;
+use crate::Config;
+use crate::kernel::memory::memory_manager::MemoryManager;
 
 /// Boot status tracking
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -179,7 +180,13 @@ fn memory_init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
     #[cfg(not(feature = "std"))]
     unsafe {
         // Calculate virtual address for the problematic physical address
-        let virt_addr = phys_mem_offset + 0x400000;
+        let virt_addr = match phys_mem_offset {
+            Some(offset) => offset + 0x500000,
+            None => {
+                log::error!("Physical memory offset missing");
+                return Err(crate::kernel::memory::memory_manager::MemoryInitError::PhysicalOffsetMissing.into());
+            }
+        };
         // Mark it as used by writing a magic value
         core::ptr::write_volatile(virt_addr as *mut u64, 0xDEADBEEF);
         println!("Reserved problematic memory region at physical address 0x400000");

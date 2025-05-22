@@ -13,7 +13,7 @@ use x86_64::structures::paging::{
 use x86_64::structures::paging::FrameAllocator;
 use crate::kernel::memory::{
     physical::{self, PAGE_SIZE}, // Use physical::PAGE_SIZE
-    memory_manager::{self, MemoryError, MemoryProtection, MemoryProtectionFlags, MemoryType, CacheType},
+    memory_manager::{self, MemoryError, MemoryProtectionFlags, MemoryType, CacheType},
 };
 
 /// Manages the kernel's virtual address space.

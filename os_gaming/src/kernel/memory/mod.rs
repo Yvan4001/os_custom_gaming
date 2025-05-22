@@ -5,113 +5,128 @@
 
 pub mod allocator;
 pub mod dma;
-pub mod memory_manager;
-pub mod physical;
 pub mod r#virtual;
+pub mod physical;
+pub mod memory_manager;
+use x86_64::{PhysAddr, VirtAddr, structures::paging::PageTableFlags};
 
 // Re-export important types for convenience
-pub use memory_manager::{
-    MemoryError, MemoryInitError, MemoryProtection, CacheType, MemoryType, MemoryInfo, MemoryProtectionFlags,
-    map_page_for_kernel, // For direct use by allocator or other low-level kernel parts
-    // Public mapping functions are also available directly from memory_manager:
-    // memory_manager::map_physical_memory, memory_manager::unmap_region
-};
-pub use physical::PAGE_SIZE;
-
-use bootloader::BootInfo;
-use core::sync::atomic::{AtomicBool, Ordering};
-use x86_64::{PhysAddr, VirtAddr};
-use x86_64::structures::paging::PageTableFlags;
+use crate::boot::info::{CustomBootInfo, MemoryRegion, MemoryRegionType};
+use crate::kernel::memory::memory_manager::{self as mm, MemoryInitError, MemoryError, MemoryProtectionFlags, CacheType, MemoryType, MemoryInfo};
+use crate::kernel::memory::physical::{self as pmm, PAGE_SIZE};
+use core::sync::atomic::Ordering;
+use alloc::string::String;
+use core::sync::atomic::AtomicBool;
 use core::ptr::NonNull;
 
-/// Flag to ensure memory initialization happens only once.
+pub use memory_manager::{
+    MemoryError as KernelMemoryError, // Using alias for clarity if needed elsewhere
+    MemoryProtectionFlags as KernelMemoryProtectionFlags,
+    CacheType as KernelCacheType,
+    MemoryType as KernelMemoryType,
+    MemoryInfo as KernelMemoryInfo,
+    MemoryInitError as KernelMemoryInitError, // Re-export if needed
+    map_page_for_kernel, map_physical_memory, unmap_region, get_physical_memory_offset
+};
+
 static MEMORY_SYSTEM_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 /// Initializes the entire memory subsystem.
-pub fn init(boot_info: &'static BootInfo) -> Result<(), &'static str> {
+pub fn init(boot_info: &'static CustomBootInfo) -> Result<(), &'static str> {
     if MEMORY_SYSTEM_INITIALIZED.compare_exchange(false, true, Ordering::SeqCst, Ordering::Relaxed).is_err() {
         log::warn!("Memory subsystem already initialized.");
         return Ok(());
     }
+    log::info!("Memory Subsystem: init(CustomBootInfo) called.");
 
-    log::info!("Initializing Kernel Memory Subsystem...");
-
-    // 1. Initialize Core Memory Manager (PMM through physical::init_frame_allocator, Mapper)
-    if let Err(e) = memory_manager::MemoryManager::init_core(boot_info) {
-        let err_msg: &'static str = e.into();
-        log::error!("Core memory manager initialization failed: {}", err_msg);
-        MEMORY_SYSTEM_INITIALIZED.store(false, Ordering::SeqCst);
-        return Err(err_msg);
+    if let Err(e) = adapt_and_init_core_memory(boot_info) {
+         let err_msg: &'static str = e.into();
+         log::error!("Core memory manager initialization failed: {}", err_msg);
+         MEMORY_SYSTEM_INITIALIZED.store(false, Ordering::SeqCst);
+         return Err(err_msg);
     }
     log::info!("Core memory manager (PMM & Mapper) initialized.");
 
-    // 2. Initialize Virtual Memory Abstractions
-    if let Err(e) = r#virtual::init_virtual_manager() { // Calls the VMM's own init
-        log::error!("Virtual memory manager initialization failed: {}", e);
-        MEMORY_SYSTEM_INITIALIZED.store(false, Ordering::SeqCst);
-        return Err(e);
-    }
-    log::info!("Virtual memory manager abstractions initialized.");
-
-    // 3. Initialize Higher-Level Memory Services (Kernel Heap, DMA)
-    if let Err(e) = memory_manager::MemoryManager::init_services() { // This calls allocator::init_heap and dma::init
+    if let Err(e) = memory_manager::MemoryManager::init_services() {
         let err_msg: &'static str = e.into();
         log::error!("Memory services (Heap/DMA) initialization failed: {}", err_msg);
         MEMORY_SYSTEM_INITIALIZED.store(false, Ordering::SeqCst);
         return Err(err_msg);
     }
     log::info!("Memory services (Heap & DMA) initialized.");
-
-    let mem_info = memory_manager::memory_info();
-    log::info!(
-        "Memory Stats Post-Init: Total RAM: {} MiB, Free RAM: {} MiB, Used RAM: {} MiB",
-        mem_info.total_ram / (1024 * 1024),
-        mem_info.free_ram / (1024 * 1024),
-        mem_info.used_ram / (1024 * 1024)
-    );
-
-    log::info!("Kernel Memory Subsystem successfully initialized.");
+    log::info!("Main memory initialization complete.");
     Ok(())
 }
 
-// --- High-Level Public API Wrappers (Examples) ---
+fn adapt_and_init_core_memory(custom_boot_info: &'static CustomBootInfo) -> Result<(), MemoryInitError> {
+    log::debug!("Adapting CustomBootInfo for core memory initialization...");
 
-pub fn alloc_virtual_backed_memory(
-    size: usize,
-    protection: MemoryProtectionFlags,
-    mem_type: MemoryType,
-) -> Result<NonNull<u8>, MemoryError> {
-    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
+    let phys_mem_offset_u64 = custom_boot_info.physical_memory_offset
+        .ok_or(MemoryInitError::PhysicalOffsetMissing)?;
+    let phys_mem_offset_val = VirtAddr::new(phys_mem_offset_u64);
+    memory_manager::PHYSICAL_MEMORY_OFFSET.store(phys_mem_offset_u64, Ordering::SeqCst);
+    log::debug!("Physical memory offset from CustomBootInfo: {:#x}", phys_mem_offset_u64);
+
+    let kernel_start_phys = PhysAddr::new(unsafe { &memory_manager::__kernel_physical_start as *const _ as u64 });
+    let kernel_end_phys = PhysAddr::new(unsafe { &memory_manager::__kernel_physical_end as *const _ as u64 });
+    if kernel_start_phys.is_null() || kernel_end_phys.is_null() || kernel_start_phys >= kernel_end_phys {
+        return Err(MemoryInitError::KernelAddressMissing);
+    }
+
+    // MODIFIED: Use custom_boot_info.memory_map_regions directly
+    let memory_map_regions_slice = &custom_boot_info.memory_map_regions;
+    if memory_map_regions_slice.is_empty() && custom_boot_info.physical_memory_offset.is_some() { // Check if map is empty but expected
+        log::warn!("Memory map from CustomBootInfo is empty, PMM might not initialize correctly.");
+        // Depending on strictness, you might return an error here:
+        // return Err(MemoryInitError::PhysicalMemoryInitFailed("Empty memory map".into()));
+    }
+    log::debug!("Passing {} memory regions from CustomBootInfo to PMM init.", memory_map_regions_slice.len());
+
+    physical::init_frame_allocator(
+        memory_map_regions_slice.iter(), // Iterates over &MemoryRegion
+        kernel_start_phys,
+        kernel_end_phys
+    ).map_err(|e_str| MemoryInitError::PhysicalMemoryInitFailed(String::from(e_str)))?;
+    log::info!("Physical Frame Allocator (PMM) initialized with custom map.");
+
+    let mut mm_guard = memory_manager::MEMORY_MANAGER.lock();
+    // MODIFIED: Make create_page_tables pub(crate) in memory_manager.rs
+    let page_tables = unsafe {
+        crate::kernel::memory::memory_manager::MemoryManager::create_page_tables(phys_mem_offset_val)
+    }?;
+    // MODIFIED: Make mapper field pub(crate) in memory_manager.rs or add a setter
+    mm_guard.mapper = Some(page_tables);
+    drop(mm_guard);
+
+    log::info!("Core Mapper initialized with CustomBootInfo offset.");
+    memory_manager::CORE_MM_INITIALIZED.store(true, Ordering::SeqCst);
+    Ok(())
+}
+
+pub fn alloc_virtual_backed_memory(size: usize, protection: MemoryProtectionFlags, mem_type: MemoryType) -> Result<NonNull<u8>, MemoryError> {
+    if !memory_manager::CORE_MM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
     if size == 0 { return Err(MemoryError::InvalidRange); }
-    r#virtual::allocate_and_map(size, protection, mem_type) // From virtual.rs
+    r#virtual::allocate_and_map(size, protection, mem_type)
         .map(|vaddr| NonNull::new(vaddr.as_mut_ptr()).ok_or(MemoryError::AllocationFailed))?
 }
-
 pub fn free_virtual_backed_memory(ptr: NonNull<u8>, size: usize) -> Result<(), MemoryError> {
-    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
+    if !memory_manager::CORE_MM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
     if size == 0 { return Ok(()); }
-    r#virtual::free_and_unmap(VirtAddr::from_ptr(ptr.as_ptr()), size) // From virtual.rs
+    r#virtual::free_and_unmap(VirtAddr::from_ptr(ptr.as_ptr()), size)
 }
-
-pub fn map_phys_mem_to_kernel_virt(
-    phys_addr: PhysAddr,
-    size: usize,
-    flags: PageTableFlags,
-) -> Result<VirtAddr, MemoryError> {
-    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
+pub fn map_phys_mem_to_kernel_virt(phys_addr: PhysAddr, size: usize, flags: PageTableFlags) -> Result<VirtAddr, MemoryError> {
+    if !memory_manager::CORE_MM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
     if size == 0 { return Err(MemoryError::InvalidRange); }
-    memory_manager::map_physical_memory(phys_addr, size, flags) // From memory_manager.rs
+    memory_manager::map_physical_memory(phys_addr, size, flags)
 }
-
 pub fn unmap_kernel_virt_region(virt_addr: VirtAddr, size: usize) -> Result<(), MemoryError> {
-    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
+    if !memory_manager::CORE_MM_INITIALIZED.load(Ordering::Acquire) { return Err(MemoryError::InvalidState); }
     if size == 0 { return Ok(()); }
-    memory_manager::unmap_region(virt_addr, size) // From memory_manager.rs
+    memory_manager::unmap_region(virt_addr, size)
 }
-
 pub fn get_memory_statistics() -> MemoryInfo {
-    if !MEMORY_SYSTEM_INITIALIZED.load(Ordering::Acquire) {
+    if !memory_manager::CORE_MM_INITIALIZED.load(Ordering::Acquire) {
         return MemoryInfo { total_ram:0, free_ram:0, used_ram:0, reserved_ram:0, kernel_size:0, page_size: PAGE_SIZE};
     }
-    memory_manager::memory_info() // From memory_manager.rs
+    memory_manager::memory_info()
 }

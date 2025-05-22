@@ -10,7 +10,7 @@ pub mod font;
 pub mod windows_layout;
 
 use core::arch::asm;
-use crate::Config;
+use crate::config;
 
 // These will be implemented later
 mod widgets;
@@ -23,6 +23,7 @@ pub use theme::Theme;
 pub use windows_layout::WindowLayoutConfig;
 use crate::kernel::cpu;
 use crate::kernel::cpu::get_cpu_info;
+use crate::Config;
 
 pub struct Instant {
     timestamp: u64,

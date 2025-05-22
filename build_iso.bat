@@ -88,7 +88,7 @@ echo.
 echo 🚀 For running with Docker (if Docker Desktop is installed):
 echo docker run --rm -v "%CD%:/data" ^
     --privileged ^
-    -p 5900:5900 ^
+    -p 5901:5901 ^
     tianon/qemu ^
     qemu-system-x86_64 -m 1G ^
     -display vnc=0.0.0.0:0 ^

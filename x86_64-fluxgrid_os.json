@@ -13,12 +13,14 @@
   "disable-redzone": true,
   "features": "+sse",
   "cpu": "x86-64",
-  "relocation-model": "pic",
-  "code-model": "kernel",
+  "pre-link-args": {
+    "ld.lld": ["-Tlinker.ld"]
+  },
+  "relocation-model": "static",                
+  "code-model": "kernel",          
   "frame-pointer": "always",
-  "position-independent-executables": true,
+  "position-independent-executables": false,
   "stack-probes": {
     "kind": "call"
   }
-
 }

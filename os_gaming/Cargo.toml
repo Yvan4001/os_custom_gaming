@@ -6,47 +6,40 @@ description = "A gaming operating system kernel"
 
 [[bin]]
 name = "fluxgridOs"
+path = "src/main.rs" # Ensure this points to your main.rs with _start
 test = false
 bench = false
 
 [lib]
-name = "fluxgridOs"
+name = "fluxgridOs" # The library crate name
 path = "src/lib.rs"
 
 [dependencies]
-spin = "0.10.0"
+spin = "0.9.8"
 lazy_static = { version = "1.5.0", features = ["spin_no_std"] }
 bit_field = "0.10.2"
 pic8259 = "0.11.0"
-serde = { version = "=1.0.152", default-features = false, features = ["derive", "alloc"] }
+
+serde = { version = "1.0.197", default-features = false, features = ["derive", "alloc"] }
+once_cell = { version = "1.19.0", default-features = false, features = ["alloc"] }
+
 bincode = { version = "2.0.0-rc.3", default-features = false, features = ["alloc", "derive"] }
 raw-cpuid = "11.5.0"
-panic-abort = "0.3.2"
-libc = { version = "0.2.172", default-features = false }
+libc = { version = "0.2.155", default-features = false, optional = true }
 linked_list_allocator = "0.10.5"
-bootloader = { version = "0.9.31", default-features = false, features = ["map_physical_memory"] }
-log = { version = "0.4.27", default-features = false }
-uart_16550 = "0.3.2"
-hashbrown = "0.14"
-micromath = { version = "0.5.1", default-features = false }
-x86_64 = { version = "^0.15.2", features = ["abi_x86_interrupt"] }
 
-[package.metadata.bootimage]
-default-target = "x86_64-fluxgrid_os"
-# Use a different physical memory offset
-physical-memory-offset = "0x6000_0000"
+# REMOVED: bootloader crate is no longer a direct dependency for this boot method.
+# bootloader = { version = "0.9.31", default-features = false, features = ["map_physical_memory"] }
 
-# Specify a custom kernel segment offset
-kernel-stack-address = "0x100_0000"
-kernel-offset = "0x10_0000"
+log = { version = "0.4.21", default-features = false }
+uart_16550 = { version = "0.3.0" }
+hashbrown = { version = "0.14.5" }
+micromath = { version = "2.1.0", default-features = false }
+x86_64 = { version = "0.15.1", features = ["abi_x86_interrupt"] }
+multiboot2 = "0.23.1"
 
-# Configure memory map
-map-physical-memory = true
-map-page-table-recursively = false
 
 [features]
 default = ["no_std"]
 no_std = []
-bootloader-custom-config = []
-bootloader-config = ["bootloader-custom-config"]  # You can make this an alias
-
+# bootloader-custom-config = [] # Likely not needed
