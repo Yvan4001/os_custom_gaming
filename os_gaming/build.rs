@@ -4,6 +4,7 @@ use std::path::Path;
 
 fn main() {
     println!("cargo:rerun-if-changed=build.rs");
+    println!("cargo:rerun-if-changed=src/boot/boot.s");
     println!("cargo:rerun-if-changed=src/bootloaderCustom.rs");
     
     // Enable bootloader-custom-config feature if specified
