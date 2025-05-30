@@ -325,8 +325,5 @@ start_64bit_s2:
     mov ss, ax
     mov rsp, 0x70000
     
-    ; Load Rust kernel from disk and jump to it
-    ; Your bootloader already sets up MBI at 0x9000
-    ; Jump to kernel at KERNEL_LOAD_PHYS_ADDR (0x100000)
-    mov rax, KERNEL_LOAD_PHYS_ADDR
-    jmp rax
+    ; Jump directly to Rust kernel 
+    jmp 0x101000  ; Your kernel's entry point

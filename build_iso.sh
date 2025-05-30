@@ -76,6 +76,7 @@ echo "   Kernel ELF found: $KERNEL_ELF_PATH (Size: $KERNEL_SIZE_BYTES bytes)"
 
 
 echo "📀 Creating ISO file with GRUB..."
+ISO_DIR="iso_root"
 # Create ISO directory structure
 mkdir -p iso_root/boot/grub
 
@@ -83,33 +84,37 @@ mkdir -p iso_root/boot/grub
 cp "$KERNEL_ELF_PATH" "iso_root/boot/${KERNEL_TARGET_NAME}.elf"
 
 # Create GRUB configuration
-cat > iso_root/boot/grub/grub.cfg << EOF
+cat > "$ISO_DIR/boot/grub/grub.cfg" << 'EOF'
 set timeout=3
 set default=0
 
 # Check if GRUB can see the file
-if [ -e /boot/${KERNEL_TARGET_NAME}.elf ]; then
-    echo "GRUB: Found /boot/${KERNEL_TARGET_NAME}.elf"
+if [ -e /boot/fluxgridOs.elf ]; then
+    echo "GRUB: Found /boot/fluxgridOs.elf"
 else
-    echo "GRUB Error: Kernel file /boot/${KERNEL_TARGET_NAME}.elf not found by GRUB!"
-    # Halt or loop here to make it obvious in GRUB if the file isn't seen
-    # sleep 60
-    # halt
+    echo "GRUB Error: Kernel file /boot/fluxgridOs.elf not found by GRUB!"
 fi
 
-menuentry "$PROJECT_NAME OS (Rust Kernel - ${KERNEL_TARGET_NAME}.elf)" {
-    echo "GRUB: Attempting to load /boot/${KERNEL_TARGET_NAME}.elf with multiboot2..."
-    multiboot2 /boot/${KERNEL_TARGET_NAME}.elf
-    echo "GRUB: multiboot2 command executed. Attempting to boot..."
+menuentry "FluxGrid OS (Rust Kernel - fluxgridOs.elf)" {
+    echo "GRUB: Loading kernel..."
+    multiboot2 /boot/fluxgridOs.elf --quirk-modules-after-kernel
+    echo "GRUB: Kernel loaded, transferring control..."
     boot
-    echo "GRUB Error: 'boot' command returned. Kernel failed to load or run."
+    echo "GRUB Error: Boot failed!"
+}
+
+menuentry "FluxGrid OS (Alternative)" {
+    echo "GRUB: Alternative boot method..."
+    multiboot2 /boot/fluxgridOs.elf
+    boot
 }
 
 menuentry "GRUB Debug - Check File" {
-    echo "Checking for /boot/${KERNEL_TARGET_NAME}.elf ..."
+    echo "Checking for /boot/fluxgridOs.elf ..."
     ls /boot/
-    # Halt to see output
-    # halt
+    echo "File details:"
+    ls -la /boot/fluxgridOs.elf
+    read
 }
 EOF
 
