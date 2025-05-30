@@ -30,6 +30,21 @@ fi
 echo "✅ Custom assembly bootloader compiled successfully: ${ASM_BOOTLOADER_BIN}"
 echo "   You can test it with: qemu-system-x86_64 -fda ${ASM_BOOTLOADER_BIN}"
 
+echo "🛠️ Create an empty 1.44MB floppy disk image"
+dd if=/dev/zero of=floppy.img bs=512 count=2880
+
+echo "🛠️ Write MBR (first 512 bytes) to sector 0"
+dd if=bootloader/boot.bin of=floppy.img conv=notrunc bs=512 count=1 seek=0
+
+echo "🛠️ Write Stage 2 (second 512 bytes) to sector 1"
+dd if=bootloader/boot.bin of=floppy.img conv=notrunc bs=512 count=1 skip=1 seek=1
+
+echo "🛠️ Verify the MBR signature exists at the end of sector 0"
+hexdump -C -s 510 -n 2 floppy.img | grep "55 aa"
+
+echo "🛠️ Verify Stage 2 starts at sector 1 (should show 'S' character)"
+hexdump -C -s 512 -n 16 floppy.img
+
 echo "🚀 Building Rust kernel ELF (${KERNEL_TARGET_NAME})..."
 # The -Z build-std flags should be in your .cargo/config.toml for the target
 # Ensure your os_gaming/Cargo.toml has a [[bin]] section with name = "fluxgridOs"
@@ -115,18 +130,41 @@ echo "🚀 To test your custom assembly bootloader directly (if it's a floppy im
 echo "qemu-system-x86_64 -fda ${ASM_BOOTLOADER_BIN} -no-reboot -no-shutdown"
 echo ""
 
-# MODIFIED: Updated Docker section
-echo "🐳 To run the ISO with QEMU inside Docker (VNC display):"
-echo "   (Ensure Docker is installed and running. You might need sudo.)"
-echo "   Make sure no other service is using port 5900 on your host."
+echo "🐳 CUSTOM BOOTLOADER - Normal Mode:"
+echo "sudo docker run --rm -v \"\$(pwd):/data\" \\"
+echo "      --privileged \\"
+echo "      -p 5900:5900 \\"
+echo "      tianon/qemu \\"
+echo "      qemu-system-x86_64 -m 1G \\"
+echo "          -fda /data/floppy.img \\"
+echo "          -display vnc=0.0.0.0:0 \\"
+echo "          -serial stdio \\"
+echo "          -no-reboot \\"
+echo "          -no-shutdown"
 echo ""
-echo "   Command to run:"
-echo "   sudo docker run --rm -v \"\$(pwd):/data\" \\"
-echo "       --privileged \\"
-echo "       -p 5900:5900 \\"
-echo "       -p 1234:1234 \\"
-echo "       tianon/qemu \\"
-echo "       qemu-system-x86_64 -m 1G -serial stdio -cdrom /data/$ISO_NAME -no-reboot -no-shutdown -S -gdb tcp::1234 -vnc :0"
+echo "🐳 CUSTOM BOOTLOADER - Debug Mode (GDB):"
+echo "sudo docker run --rm -v \"\$(pwd):/data\" \\"
+echo "      --privileged \\"
+echo "      -p 5900:5900 \\"
+echo "      -p 1234:1234 \\"
+echo "      tianon/qemu \\"
+echo "      qemu-system-x86_64 -m 1G \\"
+echo "          -fda /data/floppy.img \\"
+echo "          -display vnc=0.0.0.0:0 \\"
+echo "          -serial stdio \\"
+echo "          -no-reboot \\"
+echo "          -no-shutdown \\"
+echo "          -S \\"
+echo "          -gdb tcp::1234"
 echo ""
-echo "   Then, connect with a VNC viewer to: localhost:5900"
+echo "🔍 For debug mode: Connect GDB to localhost:1234, then use 'continue' to start"
+
+echo "🐳 Docker commands for running the ISO:"
+echo "sudo docker run --rm -v "$(pwd):/data" \
+    --privileged -p 5900:5900 tianon/qemu \
+    qemu-system-x86_64 -m 1G \
+        -cdrom /data/FluxGrid.iso \
+        -display vnc=0.0.0.0:0 \
+        -serial stdio \
+        -no-reboot -no-shutdown"
 echo ""
