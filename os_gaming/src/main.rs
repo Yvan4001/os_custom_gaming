@@ -2,6 +2,9 @@
 #![no_main]
 
 use core::panic::PanicInfo;
+use core::arch::asm;
+use fluxgridOs::kernel_entry_from_lib;
+
 
 // Correct multiboot2 header structure
 #[repr(C, packed)]
@@ -22,6 +25,10 @@ const MAGIC: u32 = 0xe85250d6;
 const ARCH: u32 = 0;
 const CHECKSUM: u32 = 0u32.wrapping_sub(MAGIC).wrapping_sub(ARCH).wrapping_sub(HEADER_LENGTH);
 
+#[link_section = ".bss.stack"]
+static mut BOOTSTRAP_STACK: [u8; 4096 * 4] = [0; 4096 * 4]; // 16KiB stack
+
+
 #[link_section = ".multiboot_header"]
 #[used]
 static MULTIBOOT_HEADER: Multiboot2Header = Multiboot2Header {
@@ -37,28 +44,36 @@ static MULTIBOOT_HEADER: Multiboot2Header = Multiboot2Header {
 // VGA text mode helper functions
 struct VgaWriter {
     position: usize,
+    color: u8,
 }
 
 impl VgaWriter {
     fn new() -> Self {
-        VgaWriter { position: 0 }
+        VgaWriter {
+            position: 0,
+            color: 0x07, // Default white text on black background
+        }
     }
 
     fn set_position(&mut self, row: usize, col: usize) {
-        self.position = row * 80 + col;
+        if row < 25 && col < 80 { // Basic bounds check
+            self.position = row * 80 + col;
+        }
     }
 
+    // write_char as you provided
     fn write_char(&mut self, character: u8, color: u8) {
-        if self.position >= 2000 {
-            return;
+        if self.position >= 80 * 25 {
+            // Simple wrap around, or could scroll/clear
+            self.position = 0;
         }
         
         let byte_offset = self.position * 2;
+        let vga_ptr = 0xb8000 as *mut u8;
         
         unsafe {
-            let vga = 0xb8000 as *mut u8;
-            *vga.add(byte_offset) = character;
-            *vga.add(byte_offset + 1) = color;
+            *vga_ptr.add(byte_offset) = character;
+            *vga_ptr.add(byte_offset + 1) = color;
         }
         
         self.position += 1;
@@ -66,28 +81,57 @@ impl VgaWriter {
 
     fn write_string(&mut self, text: &str, color: u8) {
         for byte in text.bytes() {
-            self.write_char(byte, color);
+            if byte == b'\n' {
+                self.newline();
+            } else if byte.is_ascii_graphic() || byte == b' ' { // Print only displayable ASCII
+                self.write_char(byte, color);
+            }
+        }
+        
+        if self.position >= 80 * 25 {
+            // Simple wrap around, or could scroll/clear
+            self.position = 0;
         }
     }
 
     fn newline(&mut self) {
         let current_row = self.position / 80;
-        self.position = (current_row + 1) * 80;
+        if current_row + 1 >= 25 {
+            // For simplicity, wrap to top. A real implementation might scroll.
+            self.clear_screen(); // Or just self.position = 0;
+        } else {
+            self.position = (current_row + 1) * 80;
+        }
     }
 
     fn clear_screen(&mut self) {
-        unsafe {
-            let vga = 0xb8000 as *mut u8;
-            for i in 0..4000 {
-                *vga.add(i) = if i % 2 == 0 { b' ' } else { 0x07 };
+        let vga_ptr = 0xb8000 as *mut u8;
+        let space = b' ';
+        let attribute = 0x07; // Light gray on black
+
+        for i in 0..(80 * 25) {
+            unsafe {
+                *vga_ptr.add(i * 2) = space;
+                *vga_ptr.add(i * 2 + 1) = attribute;
             }
         }
         self.position = 0;
     }
 }
 
-/*#[no_mangle]
+
+#[no_mangle]
 pub extern "C" fn _start() -> ! {
+
+    unsafe {
+        let stack_top = BOOTSTRAP_STACK.as_ptr() as u64 + BOOTSTRAP_STACK.len() as u64;
+        asm!(
+            "mov rsp, {}",
+            in(reg) stack_top,
+            options(nostack, nomem) // nostack because we are setting rsp
+        );
+    }
+    
     // Initialize VGA writer
     let mut vga = VgaWriter::new();
     
@@ -137,55 +181,63 @@ pub extern "C" fn _start() -> ! {
     // Call kernel main
     vga.write_string("Starting kernel main...", 0x0C);
     vga.newline();
-    
-    kernel_main(&mut vga);
-}*/
 
-#[no_mangle]
+    kernel_main(&mut vga);
+}
+
+/*#[no_mangle]
 pub extern "C" fn _start() -> ! {
-    // Clear screen with basic colors
-    unsafe {
-        let vga = 0xb8000 as *mut u8;
-        for i in 0..4000 {
-            *vga.add(i) = if i % 2 == 0 { b' ' } else { 0x07 }; // White on black
-        }
-    }
-    
-    // Test with BASIC VGA colors only
+    // PART 1: Direct VGA write using hardcoded addresses
+    // This will produce "RUST OK" in bright red on first line
     unsafe {
         let vga = 0xb8000 as *mut u8;
         
-        // Line 1: White text on black background (most compatible)
-        let text1 = b"FluxGridOS Boot Test";
-        for (i, &byte) in text1.iter().enumerate() {
-            *vga.add(i * 2) = byte;
-            *vga.add(i * 2 + 1) = 0x07; // White on black
-        }
-        
-        // Line 2: Different basic color
-        let text2 = b"VgaWriter Test Line 2";
-        for (i, &byte) in text2.iter().enumerate() {
-            *vga.add(160 + i * 2) = byte;      // Line 2 start
-            *vga.add(160 + i * 2 + 1) = 0x0F; // Bright white
-        }
-        
-        // Line 3: Another basic color
-        let text3 = b"Line 3 Different Color";
-        for (i, &byte) in text3.iter().enumerate() {
-            *vga.add(320 + i * 2) = byte;      // Line 3 start
-            *vga.add(320 + i * 2 + 1) = 0x02; // Green
-        }
+        // Write "RUST OK" in first line with 0x0C (bright red)
+        *vga.add(0) = b'R'; *vga.add(1) = 0x0C;
+        *vga.add(2) = b'U'; *vga.add(3) = 0x0C;
+        *vga.add(4) = b'S'; *vga.add(5) = 0x0C;
+        *vga.add(6) = b'T'; *vga.add(7) = 0x0C;
+        *vga.add(8) = b' '; *vga.add(9) = 0x0C;
+        *vga.add(10) = b'O'; *vga.add(11) = 0x0C;
+        *vga.add(12) = b'K'; *vga.add(13) = 0x0C;
     }
     
-    // Test VgaWriter with basic colors
+    // PART 2: Use VgaWriter to write on line 2
+    // This will show "VgaWriter OK" on line 2 if working
     let mut vga = VgaWriter::new();
-    vga.set_position(4, 0); // Line 5
-    vga.write_string("VgaWriter Basic Test", 0x07); // White on black
+    vga.set_position(1, 0);
+    vga.write_string("VgaWriter OK", 0x0A); // Green
     
+    // PART 3: Direct array-based write on line 3
+    // This will always work if code is running
+    unsafe {
+        let vga = 0xb8000 as *mut u8;
+        let message = b"CODE LOADED";
+        let line_offset = 160 * 2; // Line 3
+        
+        for (i, &byte) in message.iter().enumerate() {
+            *vga.add(line_offset + i * 2) = byte;
+            *vga.add(line_offset + i * 2 + 1) = 0x0B; // Cyan
+        }
+    }
+    
+    // PART 4: ASCII art to verify memory access (line 4)
+    unsafe {
+        let vga = 0xb8000 as *mut u8;
+        let line_offset = 160 * 3; // Line 4
+        let art = b"###################";
+        
+        for (i, &byte) in art.iter().enumerate() {
+            *vga.add(line_offset + i * 2) = byte;
+            *vga.add(line_offset + i * 2 + 1) = 0x0F; // Bright white
+        }
+    }
+    
+    // Halt CPU to prevent further execution
     loop {
         unsafe { core::arch::asm!("hlt"); }
     }
-}
+}*/
 
 fn kernel_main(vga: &mut VgaWriter) -> ! {
     vga.newline();
@@ -237,6 +289,8 @@ fn kernel_main(vga: &mut VgaWriter) -> ! {
     vga.newline();
     vga.write_string("Kernel main loop started...", 0x0F);
     vga.newline();
+
+    kernel_entry_from_lib();
     
     // Main kernel loop
     let mut counter = 0;

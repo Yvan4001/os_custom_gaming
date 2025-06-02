@@ -1,8 +1,9 @@
 ENTRY(_start)
 
 SECTIONS {
-    . = 1M;
-    
+    /* Mark the beginning of the kernel image */
+    __kernel_physical_start = .;
+
     .multiboot_header : {
         KEEP(*(.multiboot_header))
     }
@@ -10,7 +11,7 @@ SECTIONS {
     . = ALIGN(4096);
     
     .text : {
-        *(.text._start)  /* Force _start first */
+        *(.text._start)  /* Force _start to be first */
         *(.text*)
     }
     
@@ -24,8 +25,12 @@ SECTIONS {
     
     .bss : {
         *(.bss*)
+        *(.bss.stack)
         *(COMMON)
     }
+    
+    /* Mark the end of the kernel image */
+    __kernel_physical_end = .;
     
     /DISCARD/ : {
         *(.eh_frame*)

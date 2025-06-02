@@ -68,7 +68,7 @@ pub fn init_gui(config: Config) -> Result<(), &'static str> {
     let window_manager = init_window_manager(renderer)?;
 
     window_manager.close_all_windows();
-    window_manager.create_window("OS Gaming", w_config.grid_size.0, w_config.grid_size.1, true)?;
+    window_manager.create_window("FluxGridOS", w_config.grid_size.0, w_config.grid_size.1, true)?;
 
     // Initialize the font system
     init_fonts()?;
@@ -102,11 +102,13 @@ pub fn init_fonts() -> Result<(), &'static str> {
 
     // Define font paths - adjust these to actual paths in your filesystem
     let system_font_paths = [
-        "/usr/share/fonts/fluxGridOs/system_regular.ttf",
-        "/usr/share/fonts/fluxGridOs/system_bold.ttf",
-        "/usr/share/fonts/fluxGridOs/system_italic.ttf",
-        "/usr/share/fonts/fluxGridOs/monospace.ttf",
-        "/usr/share/fonts/fluxGridOs/gaming.ttf",
+        "/gui/assets/arial-font/arial.ttf",
+        "/gui/assets/arial-font/Arialn.ttf",
+        "/gui/assets/arial-font/ArialTh.ttf",
+        "/gui/assets/arial-font/ARIBL0.ttf",
+        "/gui/assets/arial-font/G_ari_bd.TTF",
+        "/gui/assets/arial-font/G_ari_i.TTF",
+        "/gui/assets/arial-font/GEO_AI__.TTF",
     ];
 
     // Try to load the system fonts
