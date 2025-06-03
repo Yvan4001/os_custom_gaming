@@ -9,13 +9,13 @@ use core::sync::atomic::{AtomicBool, Ordering};
 use spin::Mutex;
 use alloc::vec::Vec;
 
-mod detection;
-mod vesa;
-mod pci;
-mod command;
-mod memory;
-mod specific;
-mod common;
+pub mod detection;
+pub mod vesa;
+pub mod pci;
+pub mod command;
+pub mod memory;
+pub mod specific;
+pub mod common;
 
 use specific::GpuDevice;
 

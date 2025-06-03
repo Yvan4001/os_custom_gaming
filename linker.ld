@@ -1,31 +1,33 @@
 ENTRY(_start)
 
 SECTIONS {
-    /* Mark the beginning of the kernel image */
+    . = 0x101000;
     __kernel_physical_start = .;
-
-    .multiboot_header : {
+    
+    .multiboot_header ALIGN(8) : {
         KEEP(*(.multiboot_header))
     }
     
-    . = ALIGN(4096);
+    .text.boot ALIGN(8) : {
+        *(.text.boot)
+    }
     
+    /* Rest of code follows */
     .text : {
-        *(.text._start)  /* Force _start to be first */
-        *(.text*)
+        *(.text .text.*)
     }
     
-    .rodata : {
-        *(.rodata*)
+    .rodata ALIGN(4K) : {
+        *(.rodata .rodata.*)
     }
     
-    .data : {
-        *(.data*)
+    .data ALIGN(4K) : {
+        *(.data .data.*)
     }
     
-    .bss : {
-        *(.bss*)
+    .bss ALIGN(4K) : {
         *(.bss.stack)
+        *(.bss .bss.*)
         *(COMMON)
     }
     

@@ -1,23 +1,18 @@
 #![no_std]
 #![no_main]
 
+extern crate alloc;
+use alloc::boxed::Box;
+use alloc::vec::Vec;
+use alloc::vec;
+use alloc::string::String;
+use alloc::format;
+
 use core::panic::PanicInfo;
 use core::arch::asm;
 use fluxgridOs::kernel_entry_from_lib;
-
-
-// Correct multiboot2 header structure
-#[repr(C, packed)]
-struct Multiboot2Header {
-    magic: u32,
-    architecture: u32,
-    header_length: u32,
-    checksum: u32,
-    // End tag
-    end_tag_type: u16,
-    end_tag_flags: u16,
-    end_tag_size: u32,
-}
+use fluxgridOs::boot::info;
+use fluxgridOs::boot;
 
 // Calculate proper checksum
 const HEADER_LENGTH: u32 = 24;
@@ -25,10 +20,20 @@ const MAGIC: u32 = 0xe85250d6;
 const ARCH: u32 = 0;
 const CHECKSUM: u32 = 0u32.wrapping_sub(MAGIC).wrapping_sub(ARCH).wrapping_sub(HEADER_LENGTH);
 
-#[link_section = ".bss.stack"]
-static mut BOOTSTRAP_STACK: [u8; 4096 * 4] = [0; 4096 * 4]; // 16KiB stack
+const MULTIBOOT2_MAGIC: u32 = 0x36d76289; // Multiboot2 magic number
 
+#[repr(C, align(8))]
+struct Multiboot2Header {
+    magic: u32,
+    architecture: u32,
+    header_length: u32,
+    checksum: u32,
+    end_tag_type: u16,
+    end_tag_flags: u16,
+    end_tag_size: u32,
+}
 
+// Place multiboot header in its own section
 #[link_section = ".multiboot_header"]
 #[used]
 static MULTIBOOT_HEADER: Multiboot2Header = Multiboot2Header {
@@ -36,212 +41,248 @@ static MULTIBOOT_HEADER: Multiboot2Header = Multiboot2Header {
     architecture: ARCH,
     header_length: HEADER_LENGTH,
     checksum: CHECKSUM,
-    end_tag_type: 0,      // End tag type
-    end_tag_flags: 0,     // End tag flags  
-    end_tag_size: 8,      // End tag size
+    end_tag_type: 0,
+    end_tag_flags: 0,
+    end_tag_size: 8,
 };
+
+// Stack defined after the header
+#[link_section = ".bss.stack"]
+static mut BOOTSTRAP_STACK: [u8; 4096 * 4] = [0; 4096 * 4]; // 16KiB stack
 
 // VGA text mode helper functions
 struct VgaWriter {
     position: usize,
-    color: u8,
 }
 
 impl VgaWriter {
     fn new() -> Self {
-        VgaWriter {
-            position: 0,
-            color: 0x07, // Default white text on black background
-        }
-    }
-
-    fn set_position(&mut self, row: usize, col: usize) {
-        if row < 25 && col < 80 { // Basic bounds check
-            self.position = row * 80 + col;
-        }
-    }
-
-    // write_char as you provided
-    fn write_char(&mut self, character: u8, color: u8) {
-        if self.position >= 80 * 25 {
-            // Simple wrap around, or could scroll/clear
-            self.position = 0;
-        }
-        
-        let byte_offset = self.position * 2;
-        let vga_ptr = 0xb8000 as *mut u8;
-        
-        unsafe {
-            *vga_ptr.add(byte_offset) = character;
-            *vga_ptr.add(byte_offset + 1) = color;
-        }
-        
-        self.position += 1;
-    }
-
-    fn write_string(&mut self, text: &str, color: u8) {
-        for byte in text.bytes() {
-            if byte == b'\n' {
-                self.newline();
-            } else if byte.is_ascii_graphic() || byte == b' ' { // Print only displayable ASCII
-                self.write_char(byte, color);
+        // Clear screen first
+        let vga = 0xB8000 as *mut u16;
+        for i in 0..(80*25) {
+            unsafe {
+                *vga.add(i) = 0x0720; // Space with light gray on black
             }
         }
         
+        Self { position: 0 }
+    }
+
+    fn write_char(&mut self, c: u8, color: u8) {
+        let vga = 0xB8000 as *mut u16;
+        let character = u16::from(c);
+        let color = u16::from(color) << 8;
+        let value = character | color;
+
+        unsafe {
+            // Use explicit volatile write for VGA
+            core::ptr::write_volatile(vga.add(self.position), value);
+        }
+
+        self.position += 1;
         if self.position >= 80 * 25 {
-            // Simple wrap around, or could scroll/clear
-            self.position = 0;
+            self.scroll();
+        }
+    }
+
+    fn write_string(&mut self, s: &str, color: u8) {
+        for c in s.bytes() {
+            match c {
+                b'\n' => self.newline(),
+                c if c.is_ascii_control() => self.write_char(b'?', color),
+                _ => self.write_char(c, color),
+            }
         }
     }
 
     fn newline(&mut self) {
-        let current_row = self.position / 80;
-        if current_row + 1 >= 25 {
-            // For simplicity, wrap to top. A real implementation might scroll.
-            self.clear_screen(); // Or just self.position = 0;
-        } else {
-            self.position = (current_row + 1) * 80;
+        let current_line = self.position / 80;
+        self.position = (current_line + 1) * 80;
+        if self.position >= 80 * 25 {
+            self.scroll();
+        }
+    }
+
+    fn scroll(&mut self) {
+        let vga = 0xB8000 as *mut u16;
+        
+        unsafe {
+            // Move lines up
+            for i in 0..(24*80) {
+                *vga.add(i) = *vga.add(i + 80);
+            }
+            
+            // Clear last line
+            for i in 0..80 {
+                *vga.add(24*80 + i) = 0x0720;
+            }
+        }
+        
+        self.position = 24 * 80;
+    }
+
+    fn set_position(&mut self, row: usize, col: usize) {
+        if row < 25 && col < 80 {
+            self.position = row * 80 + col;
         }
     }
 
     fn clear_screen(&mut self) {
-        let vga_ptr = 0xb8000 as *mut u8;
-        let space = b' ';
-        let attribute = 0x07; // Light gray on black
-
-        for i in 0..(80 * 25) {
+        let vga = 0xB8000 as *mut u16;
+        for i in 0..(80*25) {
             unsafe {
-                *vga_ptr.add(i * 2) = space;
-                *vga_ptr.add(i * 2 + 1) = attribute;
+                *vga.add(i) = 0x0720;
             }
         }
         self.position = 0;
     }
 }
 
-
 #[no_mangle]
+#[link_section = ".text.boot"]
 pub extern "C" fn _start() -> ! {
-
+    let vga_buffer = 0xB8000 as *mut u16;
+    
     unsafe {
+        // Save the multiboot info pointer from registers
+        let mut multiboot_magic: u32 = 0;
+        let mut multiboot_info_ptr: u32 = 0;
+        
+        // Use a single asm! call with explicit registers
+        core::arch::asm!(
+            "mov {0:e}, eax",
+            "mov {1:e}, ebx",
+            out(reg) multiboot_magic,
+            out(reg) multiboot_info_ptr
+        );
+        
+        // Quick check if magic is valid
+        if multiboot_magic == MULTIBOOT2_MAGIC {
+            // Convert to u64 after reading if needed
+            let multiboot_info_ptr_64 = multiboot_info_ptr as u64;
+            // Write to serial to verify that everything is working
+            write_serial(&format!("MULTIBOOT2 MAGIC VALID! Info at: {:#x}\r\n", multiboot_info_ptr_64));
+        } else {
+            // Add error handling if magic is not valid
+            write_serial(&format!("ERROR: Invalid multiboot magic: {:#x} (expected {:#x})\r\n", 
+                                  multiboot_magic, MULTIBOOT2_MAGIC));
+        }
+        
+        // Clear screen
+        for i in 0..(80*25) {
+            *vga_buffer.add(i) = 0x0720;
+        }
+        
+        // Write simple message
+        let msg = b"FluxGridOS Booting...";
+        for (i, &byte) in msg.iter().enumerate() {
+            *vga_buffer.add(i) = (byte as u16) | (0x0F << 8);
+        }
+        
+        // Try to write to serial port
+        write_serial("FluxGridOS: Boot started\r\n");
+        
+        // Initialize bootstrap stack
         let stack_top = BOOTSTRAP_STACK.as_ptr() as u64 + BOOTSTRAP_STACK.len() as u64;
         asm!(
             "mov rsp, {}",
             in(reg) stack_top,
-            options(nostack, nomem) // nostack because we are setting rsp
+            options(nostack, nomem)
         );
+        
+        write_serial("Stack initialized\r\n");
     }
     
-    // Initialize VGA writer
+    // Initialize VGA writer and continue to kernel_main
     let mut vga = VgaWriter::new();
-    
-    // Clear screen first
-    vga.clear_screen();
-    
-    // Welcome header
-    vga.set_position(0, 0);
-    vga.write_string("============================================", 0x0F); // White
-    vga.newline();
-    vga.write_string("       Welcome to FluxGridOS v1.0", 0x0A); // Green
-    vga.newline();
-    vga.write_string("============================================", 0x0F);
-    vga.newline();
-    vga.newline();
-    
-    // System information
-    vga.write_string("System Info:", 0x0E); // Yellow
-    vga.newline();
-    vga.write_string("  - Architecture: x86_64", 0x07);
-    vga.newline();
-    vga.write_string("  - Boot Protocol: Multiboot2", 0x07);
-    vga.newline();
-    vga.write_string("  - Kernel Language: Rust", 0x07);
-    vga.newline();
-    vga.write_string("  - VGA Mode: Text 80x25", 0x07);
-    vga.newline();
-    vga.newline();
-    
-    // Status messages
-    vga.write_string("Kernel Status:", 0x0E);
-    vga.newline();
-    vga.write_string("  [", 0x07);
-    vga.write_string("OK", 0x0A); // Green
-    vga.write_string("] Multiboot header loaded", 0x07);
-    vga.newline();
-    vga.write_string("  [", 0x07);
-    vga.write_string("OK", 0x0A);
-    vga.write_string("] VGA text mode initialized", 0x07);
-    vga.newline();
-    vga.write_string("  [", 0x07);
-    vga.write_string("OK", 0x0A);
-    vga.write_string("] Memory access working", 0x07);
-    vga.newline();
-    vga.newline();
-    
-    // Call kernel main
-    vga.write_string("Starting kernel main...", 0x0C);
-    vga.newline();
-
-    kernel_main(&mut vga);
+    kernel_main(&mut vga)
 }
 
-/*#[no_mangle]
-pub extern "C" fn _start() -> ! {
-    // PART 1: Direct VGA write using hardcoded addresses
-    // This will produce "RUST OK" in bright red on first line
-    unsafe {
-        let vga = 0xb8000 as *mut u8;
+// Function to output to serial port (COM1)
+unsafe fn write_serial(s: &str) {
+    const COM1: u16 = 0x3F8;
+    
+    for byte in s.bytes() {
+        // Wait until transmitter is empty
+        while (port_in(COM1 + 5) & 0x20) == 0 {}
         
-        // Write "RUST OK" in first line with 0x0C (bright red)
-        *vga.add(0) = b'R'; *vga.add(1) = 0x0C;
-        *vga.add(2) = b'U'; *vga.add(3) = 0x0C;
-        *vga.add(4) = b'S'; *vga.add(5) = 0x0C;
-        *vga.add(6) = b'T'; *vga.add(7) = 0x0C;
-        *vga.add(8) = b' '; *vga.add(9) = 0x0C;
-        *vga.add(10) = b'O'; *vga.add(11) = 0x0C;
-        *vga.add(12) = b'K'; *vga.add(13) = 0x0C;
+        // Send the byte
+        port_out(COM1, byte);
     }
+}
+
+// Helper functions for port I/O
+unsafe fn port_out(port: u16, value: u8) {
+    core::arch::asm!("out dx, al", in("dx") port, in("al") value);
+}
+
+unsafe fn port_in(port: u16) -> u8 {
+    let value: u8;
+    core::arch::asm!("in al, dx", out("al") value, in("dx") port);
+    value
+}
+
+unsafe fn debug_boot(message: &str) {
+    // Print to VGA
+    static mut DEBUG_LINE: usize = 24; // Use bottom line
+    static mut DEBUG_COL: usize = 0;
     
-    // PART 2: Use VgaWriter to write on line 2
-    // This will show "VgaWriter OK" on line 2 if working
-    let mut vga = VgaWriter::new();
-    vga.set_position(1, 0);
-    vga.write_string("VgaWriter OK", 0x0A); // Green
+    let vga = 0xB8000 as *mut u16;
     
-    // PART 3: Direct array-based write on line 3
-    // This will always work if code is running
-    unsafe {
-        let vga = 0xb8000 as *mut u8;
-        let message = b"CODE LOADED";
-        let line_offset = 160 * 2; // Line 3
-        
-        for (i, &byte) in message.iter().enumerate() {
-            *vga.add(line_offset + i * 2) = byte;
-            *vga.add(line_offset + i * 2 + 1) = 0x0B; // Cyan
+    for byte in message.bytes() {
+        if DEBUG_COL >= 80 {
+            DEBUG_LINE = (DEBUG_LINE + 1) % 25;
+            DEBUG_COL = 0;
+            if DEBUG_LINE == 0 { DEBUG_LINE = 24; } // Stay on bottom lines
         }
+        let offset = DEBUG_LINE * 80 + DEBUG_COL;
+        *vga.add(offset) = (byte as u16) | (0x0E << 8); // Yellow on black
+        DEBUG_COL += 1;
     }
     
-    // PART 4: ASCII art to verify memory access (line 4)
-    unsafe {
-        let vga = 0xb8000 as *mut u8;
-        let line_offset = 160 * 3; // Line 4
-        let art = b"###################";
-        
-        for (i, &byte) in art.iter().enumerate() {
-            *vga.add(line_offset + i * 2) = byte;
-            *vga.add(line_offset + i * 2 + 1) = 0x0F; // Bright white
-        }
+    // Also print to serial
+    write_serial(message);
+}
+
+unsafe fn validate_multiboot_header() -> bool {
+    // Location of multiboot header - should be at beginning of binary
+    let header_addr = &MULTIBOOT_HEADER as *const _ as u64;
+    let entry_addr = _start as *const () as u64;
+    
+    write_serial(&format!("Multiboot header at: {:#x}, _start at: {:#x}\r\n", 
+                         header_addr, entry_addr));
+    
+    // Ideally, header should come before _start and be within the first 32K
+    let diff = if header_addr <= entry_addr {
+        entry_addr - header_addr
+    } else {
+        header_addr - entry_addr
+    };
+    
+    if header_addr > entry_addr {
+        write_serial("WARNING: Multiboot header appears AFTER _start function!\r\n");
+        return false;
     }
     
-    // Halt CPU to prevent further execution
-    loop {
-        unsafe { core::arch::asm!("hlt"); }
+    if diff > 32768 {
+        write_serial("WARNING: Multiboot header is far from _start function!\r\n");
+        return false;
     }
-}*/
+    
+    // Check magic value in header
+    let header = &MULTIBOOT_HEADER;
+    write_serial(&format!("Header magic: {:#x}, checksum: {:#x}\r\n", 
+                         header.magic, header.checksum));
+    
+    header.magic == MAGIC
+}
 
 fn kernel_main(vga: &mut VgaWriter) -> ! {
+
+    unsafe { write_serial("KERNEL_MAIN: Starting execution\r\n"); }
+
     vga.newline();
-    vga.write_string("============================================", 0x0B); // Cyan
+    vga.write_string("============================================", 0x0B);
     vga.newline();
     vga.write_string("         KERNEL MAIN EXECUTING", 0x0B);
     vga.newline();
@@ -249,11 +290,180 @@ fn kernel_main(vga: &mut VgaWriter) -> ! {
     vga.newline();
     vga.newline();
     
+    // Initialize basic CustomBootInfo structure for the library
+    unsafe {
+        use boot::info::{CustomBootInfo, MemoryRegion, MemoryRegionType, set_global_boot_info};
+        use alloc::vec::Vec;
+        use x86_64::PhysAddr;
+        
+        // Create a more comprehensive memory map - essential for proper memory mgmt!
+        let mut memory_map = Vec::new();
+        
+        // Main usable memory (adjust size as needed for your QEMU config)
+        memory_map.push(MemoryRegion {
+            range: PhysAddr::new(0x100000)..PhysAddr::new(0x500000),
+            region_type: MemoryRegionType::Usable
+        });
+        
+        // Add reserved/kernel regions - these protect your kernel from being overwritten
+        memory_map.push(MemoryRegion {
+            range: PhysAddr::new(0x0)..PhysAddr::new(0x1000),
+            region_type: MemoryRegionType::Reserved // First page is reserved
+        });
+        
+        // These values come from your linker script or can be read from GRUB
+        let kernel_start = PhysAddr::new(0x100000); // Typical starting address
+        let kernel_end = PhysAddr::new(0x300000);   // Adjust based on your kernel size
+        memory_map.push(MemoryRegion {
+            range: kernel_start..kernel_end,
+            region_type: MemoryRegionType::Bootloader // Try this if Reserved doesn't work
+        });
+        
+        // Boot info - now with better settings
+        let boot_info = CustomBootInfo {
+            memory_map_regions: memory_map,
+            physical_memory_offset: Some(0xFFFF800000000000),
+            framebuffer_addr: None,
+            framebuffer_width: 0,
+            framebuffer_height: 0,
+            framebuffer_pitch: 0,
+            framebuffer_bpp: 0,
+            rsdp_addr: None,
+            command_line: None
+        };
+        
+        set_global_boot_info(boot_info);
+        write_serial("Enhanced boot info initialized\r\n");
+    }
+
+    let mem_info = fluxgridOs::kernel::memory::get_memory_statistics();
+    vga.write_string(&format!("Memory: {} MB total, {} MB free", 
+                            mem_info.total_ram / 1024 / 1024, 
+                            mem_info.free_ram / 1024 / 1024), 
+                    0x07);
+    vga.newline();
+
+    // Initialize the interrupt system
+    vga.write_string("  [", 0x07);
+    unsafe {
+        write_serial("Initializing interrupt system...\r\n");
+        
+        // Fix 1: Make sure the init function is called correctly
+        // If your function returns (), remove the Result handling
+        fluxgridOs::kernel::interrupts::init();
+        vga.write_string("OK", 0x0A); // Green
+        vga.write_string("] Interrupt system initialized", 0x07);
+        write_serial("Interrupt system initialized\r\n");
+        
+        // Enable interrupts
+        core::arch::asm!("sti");
+        write_serial("Interrupts enabled\r\n");
+    }
+    vga.newline();
+    
     // Show kernel activities
     vga.write_string("Initializing kernel subsystems...", 0x07);
     vga.newline();
+
+    // Get the boot info we previously set up
+    let boot_info = match info::get_global_boot_info() {
+        Some(info) => info,
+        None => {
+            vga.write_string("  [FAIL] No boot info available", 0x0C);
+            vga.newline();
+            loop { unsafe { core::arch::asm!("cli; hlt"); } }
+        }
+    };
+
+    // Initialize memory management subsystem
+    if let Err(e) = fluxgridOs::kernel::memory::init(boot_info) {
+        vga.write_string("  [FAIL] Memory initialization failed: ", 0x0C);
+        vga.write_string(e, 0x0C);
+        vga.newline();
+    } else {
+        vga.write_string("  [OK] Memory management initialized", 0x0A);
+        vga.newline();
+        unsafe { write_serial("Memory subsystem initialized\r\n"); }
+    }
+
+    // Initialize device drivers
+    vga.write_string("  [", 0x07);
+    if let Err(e) = fluxgridOs::kernel::drivers::init() {
+        vga.write_string("FAIL", 0x0C); // Red
+        vga.write_string("] Device drivers: ", 0x07);
+        vga.write_string(e, 0x0C);
+    } else {
+        vga.write_string("OK", 0x0A); // Green
+        vga.write_string("] Device drivers initialized", 0x07);
+        unsafe { write_serial("Device drivers initialized\r\n"); }
+    }
+    vga.newline();
+
+    // Detect CPU features
+    vga.write_string("  [", 0x07);
+    match fluxgridOs::kernel::cpu::init() {
+        Ok(_) => {
+            // Fix 2: Properly unwrap the Option before accessing fields
+            if let Some(cpu_info) = fluxgridOs::kernel::cpu::get_cpu_info() {
+                vga.write_string("OK", 0x0A); // Green
+                vga.write_string("] CPU: ", 0x07);
+                vga.write_string(&cpu_info.brand_string, 0x0F);
+                unsafe { write_serial(&format!("CPU detected: {}\r\n", cpu_info.brand_string)); }
+            } else {
+                vga.write_string("WARN", 0x0E); // Yellow
+                vga.write_string("] CPU info not available", 0x07);
+            }
+        },
+        Err(e) => {
+            vga.write_string("WARN", 0x0E); // Yellow
+            vga.write_string("] CPU: ", 0x07);
+            vga.write_string(e, 0x0E);
+        }
+    }
+    vga.newline();
+
+    // Detect and initialize GPU
+    vga.write_string("  [", 0x07);
+    match fluxgridOs::kernel::drivers::gpu::detection::detect_gpu() {
+        Ok(mut gpu) => {
+            // If detect_gpu returns a single GPU device
+            match gpu.get_info() {
+                Ok(info) => {
+                    vga.write_string("OK", 0x0A); // Green
+                    vga.write_string("] GPU: ", 0x07);
+                    
+                    // Use the device field from GpuInfo
+                    vga.write_string(info.device, 0x0F);
+                    unsafe { write_serial(&format!("GPU detected: {}\r\n", info.device)); }
+                },
+                Err(e) => {
+                    vga.write_string("WARN", 0x0E); // Yellow
+                    vga.write_string("] GPU info error: ", 0x07);
+                    vga.write_string(&format!("{:?}", e), 0x0E);
+                }
+            }
+        },
+        Ok(_) => {
+            vga.write_string("WARN", 0x0E); // Yellow
+            vga.write_string("] No GPU detected", 0x07);
+        },
+        Err(e) => {
+            vga.write_string("FAIL", 0x0C); // Red
+            vga.write_string("] GPU detection: ", 0x07);
+            vga.write_string(&format!("{:?}", e), 0x0C);
+        }
+    }
+    vga.newline();
+
+    // Test keyboard input handling
+    vga.write_string("  [", 0x07);
+    fluxgridOs::kernel::drivers::keyboard::init();
+    vga.write_string("OK", 0x0A); // Green
+    vga.write_string("] Keyboard initialized", 0x07);
+    unsafe { write_serial("Keyboard initialized\r\n"); }
+    vga.newline();
     
-    // Simulate some kernel initialization
+    // Continue with other subsystems as before
     let subsystems = [
         "Memory Manager",
         "Process Scheduler", 
@@ -290,19 +500,29 @@ fn kernel_main(vga: &mut VgaWriter) -> ! {
     vga.write_string("Kernel main loop started...", 0x0F);
     vga.newline();
 
-    kernel_entry_from_lib();
+    unsafe {
+        write_serial("\r\nSystem initialization complete\r\n");
+        write_serial("FluxGridOS entering main loop...\r\n"); 
+    }
     
     // Main kernel loop
     let mut counter = 0;
     loop {
-        // Simple heartbeat
-        if counter % 100000000 == 0 {
-            vga.write_string(".", 0x08);
+        // Simple heartbeat - less frequent for better performance
+        if counter % 10000000 == 0 {
+            vga.write_string(".", 0x08); // Dark gray for subtlety
+            
+            // Only log to serial occasionally to reduce output
+            if counter % 50000000 == 0 {
+                unsafe { write_serial("."); }
+            }
         }
         counter += 1;
         
+        // Process any pending interrupts, then halt until next interrupt
+        // The sti+hlt combination is atomic and prevents interrupt loss
         unsafe { 
-            core::arch::asm!("cli; hlt"); 
+            core::arch::asm!("sti; hlt"); 
         }
     }
 }
@@ -317,9 +537,17 @@ fn panic(_info: &PanicInfo) -> ! {
         vga.write_string(location.file(), 0x4F);
     }
     
+    // Add this loop to make the function diverge (never return)
     loop { 
-        unsafe { 
-            core::arch::asm!("cli; hlt"); 
-        } 
+        unsafe { core::arch::asm!("cli; hlt"); }
+    }
+}
+
+fn panic_halt() -> ! {
+    unsafe {
+        write_serial("CRITICAL ERROR: System halted\r\n");
+        loop {
+            core::arch::asm!("cli; hlt");
+        }
     }
 }

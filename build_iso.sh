@@ -95,27 +95,13 @@ else
     echo "GRUB Error: Kernel file /boot/fluxgridOs.elf not found by GRUB!"
 fi
 
-menuentry "FluxGrid OS (Rust Kernel - fluxgridOs.elf)" {
+menuentry "FluxGrid OS (Rust Kernel)" {
     echo "GRUB: Loading kernel..."
-    multiboot2 /boot/fluxgridOs.elf --quirk-modules-after-kernel
+    multiboot2 /boot/fluxgridOs.elf 
     echo "GRUB: Kernel loaded, transferring control..."
     boot
-    echo "GRUB Error: Boot failed!"
 }
 
-menuentry "FluxGrid OS (Alternative)" {
-    echo "GRUB: Alternative boot method..."
-    multiboot2 /boot/fluxgridOs.elf
-    boot
-}
-
-menuentry "GRUB Debug - Check File" {
-    echo "Checking for /boot/fluxgridOs.elf ..."
-    ls /boot/
-    echo "File details:"
-    ls -la /boot/fluxgridOs.elf
-    read
-}
 EOF
 
 # Generate ISO using GRUB
@@ -134,6 +120,10 @@ echo ""
 echo "🚀 To test your custom assembly bootloader directly (if it's a floppy image):"
 echo "qemu-system-x86_64 -fda ${ASM_BOOTLOADER_BIN} -no-reboot -no-shutdown"
 echo ""
+
+echo "🔍 Examining kernel ELF file..."
+objdump -h "$KERNEL_ELF_PATH" | grep -E ".text|.multiboot|.text.boot"
+objdump -t "$KERNEL_ELF_PATH" | grep "_start"
 
 echo "🐳 CUSTOM BOOTLOADER - Normal Mode:"
 echo "sudo docker run --rm -v \"\$(pwd):/data\" \\"
@@ -178,11 +168,12 @@ echo "   - Press 'Ctrl+Alt+1' to return to the VGA display."
 echo ""
 
 echo "🐳 Docker commands for running the ISO:"
-echo "sudo docker run --rm -v "$(pwd):/data" \
+echo "sudo docker run --rm -v \"\$(pwd):/data\" \\
     --privileged -p 5900:5900 tianon/qemu \
     qemu-system-x86_64 -m 1G \
-        -cdrom /data/FluxGrid.iso \
-        -display vnc=0.0.0.0:0 \
-        -serial stdio \
-        -no-reboot -no-shutdown"
+    -cdrom /data/FluxGrid.iso \
+    -display vnc=0.0.0.0:0 \
+    -vga std \
+    -serial stdio \
+    -no-reboot -no-shutdown"
 echo ""

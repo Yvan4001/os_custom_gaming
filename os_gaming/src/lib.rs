@@ -67,11 +67,16 @@ pub fn kernel_entry_from_lib() -> ! {
                 region.start_address().as_u64(), region.end_address().as_u64(), region.region_type);
         }
     }
-
     log::info!("Initializing Kernel Subsystems...");
     match init_kernel_internal(boot_info) {
         Ok(_) => log::info!("Kernel subsystems initialized successfully."),
         Err(e) => { log::error!("Kernel initialization failed: {}", e); hcf(); }
+    }
+
+    log::info!("Initializing Drivers...");
+    match init_driver_internal() {
+        Ok(_) => log::info!("Drivers initialized successfully."),
+        Err(e) => { log::error!("Driver initialization failed: {}", e); hcf(); }
     }
 
     log::info!("Initializing GUI...");
@@ -86,6 +91,11 @@ pub fn kernel_entry_from_lib() -> ! {
 
 fn init_kernel_internal(boot_info: &'static CustomBootInfo) -> Result<(), &'static str> {
     crate::kernel::memory::init(boot_info)?;
+    Ok(())
+}
+
+fn init_driver_internal() -> Result<(), &'static str> {
+    crate::kernel::drivers::init()?;
     Ok(())
 }
 
