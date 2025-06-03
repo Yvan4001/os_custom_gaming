@@ -326,4 +326,6 @@ start_64bit_s2:
     mov rsp, 0x70000
     
     ; Jump directly to Rust kernel 
-    jmp 0x101000  ; Your kernel's entry point
+    mov rax, 0x36d76289  ; Multiboot2 magic
+    ; Keep MBI info in rbx
+    jmp 0x101000  ; Jump to kernel entry point

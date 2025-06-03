@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![allow(warnings)]
 
 extern crate alloc;
 use alloc::boxed::Box;
@@ -15,12 +16,11 @@ use fluxgridOs::boot::info;
 use fluxgridOs::boot;
 
 // Calculate proper checksum
-const HEADER_LENGTH: u32 = 24;
-const MAGIC: u32 = 0xe85250d6;
-const ARCH: u32 = 0;
+const HEADER_LENGTH: u32 = 24;  // 4 * 6 bytes (each header field is 4 bytes)
+const MAGIC: u32 = 0xe85250d6;  // Multiboot2 magic number
+const MULTIBOOT2_MAGIC: u32 = 0x36d76289; // Multiboot2 bootloader magic number
+const ARCH: u32 = 0;            // i386 protected mode
 const CHECKSUM: u32 = 0u32.wrapping_sub(MAGIC).wrapping_sub(ARCH).wrapping_sub(HEADER_LENGTH);
-
-const MULTIBOOT2_MAGIC: u32 = 0x36d76289; // Multiboot2 magic number
 
 #[repr(C, align(8))]
 struct Multiboot2Header {
@@ -33,7 +33,7 @@ struct Multiboot2Header {
     end_tag_size: u32,
 }
 
-// Place multiboot header in its own section
+// Place multiboot header at the beginning with proper section
 #[link_section = ".multiboot_header"]
 #[used]
 static MULTIBOOT_HEADER: Multiboot2Header = Multiboot2Header {
@@ -144,11 +144,43 @@ pub extern "C" fn _start() -> ! {
     let vga_buffer = 0xB8000 as *mut u16;
     
     unsafe {
-        // Save the multiboot info pointer from registers
-        let mut multiboot_magic: u32 = 0;
-        let mut multiboot_info_ptr: u32 = 0;
+        // Clear the screen and write an initial message
+        for i in 0..(80*25) {
+            *vga_buffer.add(i) = 0x0720;
+        }
         
-        // Use a single asm! call with explicit registers
+        let msg = b"FluxGridOS Starting...";
+        for (i, &byte) in msg.iter().enumerate() {
+            *vga_buffer.add(i) = (byte as u16) | (0x0F << 8);
+        }
+        
+        // Set up a valid stack early
+        core::arch::asm!("cli");
+        let stack_top = BOOTSTRAP_STACK.as_ptr() as u64 + BOOTSTRAP_STACK.len() as u64;
+        core::arch::asm!(
+            "mov rsp, {}",
+            in(reg) stack_top,
+            options(nostack, nomem)
+        );
+        
+        // Verify if multiboot header is correctly placed
+        let header_valid = validate_multiboot_header();
+        
+        // Display whether header is valid
+        let msg: &[u8] = if header_valid {
+            b"Multiboot header valid."
+        } else {
+            b"ERROR: Multiboot header INVALID!"
+        };
+        
+        for (i, &byte) in msg.iter().enumerate() {
+            *vga_buffer.add(80 + i) = (byte as u16) | (if header_valid { 0x0A } else { 0x0C } << 8);
+        }
+
+        // Read multiboot info passed by GRUB
+        let mut multiboot_magic: u32;
+        let mut multiboot_info_ptr: u32; // Change to u32 to match register size
+        
         core::arch::asm!(
             "mov {0:e}, eax",
             "mov {1:e}, ebx",
@@ -156,41 +188,68 @@ pub extern "C" fn _start() -> ! {
             out(reg) multiboot_info_ptr
         );
         
-        // Quick check if magic is valid
-        if multiboot_magic == MULTIBOOT2_MAGIC {
-            // Convert to u64 after reading if needed
-            let multiboot_info_ptr_64 = multiboot_info_ptr as u64;
-            // Write to serial to verify that everything is working
-            write_serial(&format!("MULTIBOOT2 MAGIC VALID! Info at: {:#x}\r\n", multiboot_info_ptr_64));
-        } else {
-            // Add error handling if magic is not valid
-            write_serial(&format!("ERROR: Invalid multiboot magic: {:#x} (expected {:#x})\r\n", 
-                                  multiboot_magic, MULTIBOOT2_MAGIC));
+        // Print this information to the screen
+        let mut offset = 80*2; // Third line
+        
+        *vga_buffer.add(offset) = ('M' as u16) | (0x0A << 8);
+        offset += 1;
+        *vga_buffer.add(offset) = ('B' as u16) | (0x0A << 8);
+        offset += 1;
+        *vga_buffer.add(offset) = ('2' as u16) | (0x0A << 8);
+        offset += 1;
+        *vga_buffer.add(offset) = (':' as u16) | (0x0A << 8);
+        offset += 1;
+        *vga_buffer.add(offset) = (' ' as u16) | (0x0A << 8);
+        offset += 1;
+        
+        // Display magic value in hex
+        for i in 0..8 {
+            let digit = ((multiboot_magic >> (28 - i*4)) & 0xF) as u8;
+            let c = if digit < 10 { b'0' + digit } else { b'A' + (digit - 10) };
+            *vga_buffer.add(offset) = (c as u16) | (0x0A << 8);
+            offset += 1;
         }
         
-        // Clear screen
-        for i in 0..(80*25) {
-            *vga_buffer.add(i) = 0x0720;
-        }
+        *vga_buffer.add(offset) = (' ' as u16) | (0x0A << 8);
+        offset += 1;
+        *vga_buffer.add(offset) = ('P' as u16) | (0x0A << 8);
+        offset += 1;
+        *vga_buffer.add(offset) = ('T' as u16) | (0x0A << 8);
+        offset += 1;
+        *vga_buffer.add(offset) = ('R' as u16) | (0x0A << 8);
+        offset += 1;
+        *vga_buffer.add(offset) = (':' as u16) | (0x0A << 8);
+        offset += 1;
+        *vga_buffer.add(offset) = (' ' as u16) | (0x0A << 8);
+        offset += 1;
         
-        // Write simple message
-        let msg = b"FluxGridOS Booting...";
-        for (i, &byte) in msg.iter().enumerate() {
-            *vga_buffer.add(i) = (byte as u16) | (0x0F << 8);
+        // Display info pointer in hex
+        for i in 0..16 {
+            let digit = ((multiboot_info_ptr >> (60 - i*4)) & 0xF) as u8;
+            let c = if digit < 10 { b'0' + digit } else { b'A' + (digit - 10) };
+            *vga_buffer.add(offset) = (c as u16) | (0x0A << 8);
+            offset += 1;
         }
         
         // Try to write to serial port
         write_serial("FluxGridOS: Boot started\r\n");
-        
-        // Initialize bootstrap stack
-        let stack_top = BOOTSTRAP_STACK.as_ptr() as u64 + BOOTSTRAP_STACK.len() as u64;
-        asm!(
-            "mov rsp, {}",
-            in(reg) stack_top,
-            options(nostack, nomem)
-        );
-        
-        write_serial("Stack initialized\r\n");
+        write_serial(&format!("Multiboot2 magic: {:#x}, info pointer: {:#x}\r\n", 
+                             multiboot_magic, multiboot_info_ptr));
+                             
+        // Check if we have a valid multiboot2 magic
+        if multiboot_magic == MULTIBOOT2_MAGIC {
+            write_serial("Valid Multiboot2 magic detected!\r\n");
+            
+            // If we have multiboot info, we can parse it here
+            if multiboot_info_ptr != 0 {
+                write_serial(&format!("Multiboot2 info at: {:#x}\r\n", multiboot_info_ptr));
+                
+                // You can use this info to create your CustomBootInfo object
+                // Instead of hardcoding values in kernel_main
+            }
+        } else {
+            write_serial("WARNING: Invalid or no Multiboot2 magic detected!\r\n");
+        }
     }
     
     // Initialize VGA writer and continue to kernel_main

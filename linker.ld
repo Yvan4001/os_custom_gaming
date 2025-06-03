@@ -1,22 +1,23 @@
 ENTRY(_start)
 
 SECTIONS {
-    . = 0x101000;
+    /* Start loading at 1MB - standard for most kernels */
+    . = 1M;
+    
+    /* Define the kernel physical start symbol at the beginning */
     __kernel_physical_start = .;
     
+    /* The multiboot header MUST come first */
     .multiboot_header ALIGN(8) : {
         KEEP(*(.multiboot_header))
     }
     
-    .text.boot ALIGN(8) : {
-        *(.text.boot)
-    }
-    
-    /* Rest of code follows */
-    .text : {
+    .text ALIGN(4K) : {
+        *(.text.boot)   /* Boot code first */
         *(.text .text.*)
     }
     
+    /* Rest of sections... */
     .rodata ALIGN(4K) : {
         *(.rodata .rodata.*)
     }
@@ -31,13 +32,12 @@ SECTIONS {
         *(COMMON)
     }
     
-    /* Mark the end of the kernel image */
+    /* Define the kernel physical end symbol after all sections */
     __kernel_physical_end = .;
     
+    /* Discard unnecessary sections to make the kernel file smaller */
     /DISCARD/ : {
         *(.eh_frame*)
-        *(.debug*)
-        *(.note*)
-        *(.comment*)
+        *(.comment)
     }
 }

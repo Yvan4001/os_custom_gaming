@@ -88,20 +88,16 @@ cat > "$ISO_DIR/boot/grub/grub.cfg" << 'EOF'
 set timeout=3
 set default=0
 
-# Check if GRUB can see the file
-if [ -e /boot/fluxgridOs.elf ]; then
-    echo "GRUB: Found /boot/fluxgridOs.elf"
-else
-    echo "GRUB Error: Kernel file /boot/fluxgridOs.elf not found by GRUB!"
-fi
+# Debug - show which files GRUB can see
+ls /boot
 
 menuentry "FluxGrid OS (Rust Kernel)" {
-    echo "GRUB: Loading kernel..."
-    multiboot2 /boot/fluxgridOs.elf 
-    echo "GRUB: Kernel loaded, transferring control..."
+    insmod all_video
+    echo "Loading FluxGridOS kernel..."
+    multiboot2 /boot/fluxgridOs.elf
+    echo "Kernel loaded, transferring control..."
     boot
 }
-
 EOF
 
 # Generate ISO using GRUB
@@ -120,10 +116,6 @@ echo ""
 echo "🚀 To test your custom assembly bootloader directly (if it's a floppy image):"
 echo "qemu-system-x86_64 -fda ${ASM_BOOTLOADER_BIN} -no-reboot -no-shutdown"
 echo ""
-
-echo "🔍 Examining kernel ELF file..."
-objdump -h "$KERNEL_ELF_PATH" | grep -E ".text|.multiboot|.text.boot"
-objdump -t "$KERNEL_ELF_PATH" | grep "_start"
 
 echo "🐳 CUSTOM BOOTLOADER - Normal Mode:"
 echo "sudo docker run --rm -v \"\$(pwd):/data\" \\"
