@@ -234,8 +234,7 @@ pub extern "C" fn _start() -> ! {
         // Try to write to serial port
         write_serial("FluxGridOS: Boot started\r\n");
         write_serial(&format!("Multiboot2 magic: {:#x}, info pointer: {:#x}\r\n", 
-                             multiboot_magic, multiboot_info_ptr));
-                             
+            multiboot_magic, multiboot_info_ptr));
         // Check if we have a valid multiboot2 magic
         if multiboot_magic == MULTIBOOT2_MAGIC {
             write_serial("Valid Multiboot2 magic detected!\r\n");
