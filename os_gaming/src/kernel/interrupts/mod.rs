@@ -23,6 +23,7 @@ lazy_static! {
 
 /// Initialize the interrupt system
 pub fn init() {
+    x86_64::instructions::interrupts::disable();
     // Initialize the IDT with default handlers
     idt::init();
 

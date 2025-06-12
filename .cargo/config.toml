@@ -8,8 +8,10 @@ bindeps = true
 
 [target.x86_64-fluxgrid_os]
 rustflags = [
-    "-C", "link-arg=-Tlinker.ld",
-    "-C", "link-arg=--oformat=elf64-x86-64"
+    "-C", "link-arg=--no-dynamic-linker",
+    "-C", "link-arg=-static",
+    "-C", "link-arg=-z",
+    "-C", "link-arg=norelro",
 ]
 
 [package.metadata.bootloader]

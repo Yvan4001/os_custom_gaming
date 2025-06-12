@@ -205,6 +205,18 @@ impl MemoryManager {
         Ok(())
     }
 
+    pub fn init_heap_only() -> Result<(), MemoryInitError> {
+        if !CORE_MM_INITIALIZED.load(Ordering::SeqCst) {
+            return Err(MemoryInitError::PhysicalMemoryInitFailed("Core MM not ready".into()));
+        }
+        
+        log::info!("Initializing Kernel Heap (minimal)...");
+        allocator::init_heap().map_err(|_e_map| MemoryInitError::HeapInitFailed)?;
+        log::info!("Kernel Heap initialized.");
+        
+        Ok(())
+    }
+
     fn mapper_mut(&mut self) -> &mut OffsetPageTable<'static> {
         self.mapper.as_mut().expect("MemoryManager: Mapper not initialized.")
     }

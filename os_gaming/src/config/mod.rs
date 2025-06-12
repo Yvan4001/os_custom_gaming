@@ -14,6 +14,14 @@ use bincode::{Decode, Encode};
 use lazy_static::lazy_static;
 use serde::{Deserialize, Serialize};
 use spin::Mutex;
+
+#[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
+#[serde(crate = "serde")]
+pub struct Config {
+    /// The system configuration
+    pub system: SystemConfig,
+}
+
 /// Main system configuration
 #[derive(Debug, Clone, Serialize, Deserialize, Encode, Decode)]
 #[serde(crate = "serde")]
@@ -470,6 +478,14 @@ pub struct NotificationSettings {
 
     /// Maximum number of notifications to show at once
     pub max_visible: u8,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            system: SystemConfig::default(),
+        }
+    }
 }
 
 impl Default for SystemConfig {
